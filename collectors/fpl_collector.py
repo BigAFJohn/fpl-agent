@@ -79,14 +79,11 @@ def setup_directories():
 
 
 def get_database_engine():
-    """
-    Returns a SQLAlchemy engine — the single connection object we pass to
-    every function that reads or writes the database. Creating it once and
-    reusing it is more efficient than opening a new connection per query.
-    """
-    engine = create_engine(f"sqlite:///{DB_PATH}")
-    print(f"✓ Database connected: {DB_PATH}")
-    return engine
+    import os
+    pg_url = os.environ.get("FPL_DB_URL")
+    if pg_url:
+        return create_engine(pg_url)
+    return create_engine(f"sqlite:///{DB_PATH}")
 
 
 # =============================================================================
