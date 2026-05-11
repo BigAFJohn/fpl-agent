@@ -119,7 +119,7 @@ def setup_signals_table(engine):
     with engine.connect() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS lineup_signals (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                id              SERIAL PRIMARY KEY,
                 collected_at    TEXT,
                 gameweek        INTEGER,
                 player_name     TEXT,
@@ -138,7 +138,7 @@ def setup_signals_table(engine):
     # Clear signals older than 24hrs to avoid unbounded growth
     with engine.connect() as conn:
         conn.execute(text(
-            "DELETE FROM lineup_signals WHERE collected_at < datetime('now', '-24 hours')"
+            "DELETE FROM lineup_signals WHERE collected_at < NOW() - INTERVAL '24 hours'"
         ))
         conn.commit()
 
@@ -175,7 +175,7 @@ def collect_fpl_official_news(engine):
     with engine.connect() as conn:
         # Get current GW number
         gw_result = conn.execute(text(
-            "SELECT id FROM gameweeks WHERE is_current = 1 LIMIT 1"
+            "SELECT id FROM gameweeks WHERE is_current = TRUE LIMIT 1"
         ))
         gw_row = gw_result.fetchone()
         current_gw = gw_row[0] if gw_row else 0
@@ -224,6 +224,8 @@ def collect_fpl_official_news(engine):
 
     if signals:
         df = pd.DataFrame(signals)
+        if "id" in df.columns:
+            df = df.drop(columns=["id"])
         df.to_sql("lineup_signals", engine, if_exists="append", index=False)
         print(f"  ✓ {len(signals)} FPL official signals saved")
 
@@ -418,7 +420,7 @@ def verify_signals(engine):
                    COUNT(*)                   as count,
                    ROUND(AVG(confidence), 2)  as avg_confidence
             FROM lineup_signals
-            WHERE collected_at >= datetime('now', '-1 hour')
+            WHERE collected_at >= NOW() - INTERVAL '1 hour'
             GROUP BY signal_type, status
             ORDER BY signal_type, status
         """))

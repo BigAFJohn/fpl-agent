@@ -245,17 +245,12 @@ def collect_fixtures(engine):
 # =============================================================================
 
 def collect_player_histories(engine, max_players=None):
-    """
-    Calls /element-summary/{id}/ for every player and saves their
-    gameweek-by-gameweek point history.
-
-    This table becomes the training data for the prediction model. Season
-    totals from bootstrap tell us the final score; this tells us the journey —
-    what each player scored in GW1, GW2, GW3 — which is what the model learns from.
-
-    max_players: use a small number (e.g. 20) during development to avoid
-    waiting ~4 minutes on every test run. Set to None for a full production run.
-    """
+    # Truncate existing history — we rebuild fresh each run
+    with engine.connect() as conn:
+        conn.execute(text("TRUNCATE TABLE player_history RESTART IDENTITY CASCADE"))
+        conn.commit()
+    print("  Cleared existing player history")
+    
     print("\n[3/3] player histories...")
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT id, web_name FROM players")).fetchall()
@@ -291,29 +286,25 @@ def collect_player_histories(engine, max_players=None):
 
 
 def _flush_history_batch(records, engine):
-    """
-    Writes one batch of gameweek history rows to the player_history table.
-    Uses if_exists='append' so each checkpoint adds to rather than replaces
-    the table. Leading underscore marks this as an internal helper — not
-    intended to be called directly from outside this module.
-    """
+    """Writes a batch of gameweek history records to the player_history table."""
     df = pd.DataFrame(records)
     history_cols = [
         "player_id", "element", "fixture", "round",
         "opponent_team", "was_home", "kickoff_time",
-        "total_points",       # THE TARGET VARIABLE — what the model will predict
-        "minutes",            # Proxy for "did they start and play the full game?"
-        "goals_scored", "assists", "clean_sheets",
+        "total_points",
+        "minutes", "goals_scored", "assists", "clean_sheets",
         "goals_conceded", "own_goals", "penalties_saved", "penalties_missed",
-        "yellow_cards", "red_cards", "saves",
-        "bonus", "bps",
+        "yellow_cards", "red_cards", "saves", "bonus", "bps",
         "influence", "creativity", "threat", "ict_index",
-        "value",              # Player price at the time of this specific gameweek
-        "transfers_balance",  # Net transfers in/out that week
-        "selected",           # Ownership count at time of gameweek
+        "value", "transfers_balance", "selected",
     ]
     keep = [c for c in history_cols if c in df.columns]
-    df[keep].to_sql("player_history", engine, if_exists="append", index=False)
+    df = df[keep]
+
+    # Deduplicate — FPL API occasionally returns duplicate GW records
+    df = df.drop_duplicates(subset=["player_id", "round"], keep="last")
+
+    df.to_sql("player_history", engine, if_exists="append", index=False)
 
 
 # =============================================================================

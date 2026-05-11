@@ -206,41 +206,59 @@ def collect_all_seasons(engine):
     """
     Iterates over all four seasons, loads each page once via Playwright,
     intercepts the API response, parses it, and saves to the database.
-
-    All seasons share one browser instance — faster startup, less memory.
     """
+    # Truncate before re-collecting — rebuilt fresh each run
+    with engine.connect() as conn:
+        conn.execute(text("TRUNCATE TABLE understat_players, understat_teams RESTART IDENTITY CASCADE"))
+        conn.commit()
+    print("  Cleared existing Understat data")
+
     print("\n[1/2] Collecting season-level player and team xG data...")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
 
         for season_label, url in LEAGUE_URLS.items():
-            data = fetch_league_season(season_label, url, browser)
-            if not data:
+            # Fresh dict per season — avoids cross-season contamination
+            captured = {}
+
+            def handle_response(response, cap=captured):
+                if "getLeagueData" in response.url:
+                    try:
+                        cap.update(response.json())
+                    except Exception:
+                        pass
+
+            page = browser.new_page()
+            page.on("response", handle_response)
+
+            try:
+                print(f"  Loading {season_label}...")
+                page.goto(url, timeout=30000)
+                page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception as e:
+                print(f"  ✗ Failed to load {season_label}: {e}")
+                page.close()
                 continue
 
-            # --- PLAYERS ---
-            if "players" in data:
-                players_df = parse_players(data["players"], season_label)
-                players_df.to_sql(
-                    "understat_players", engine,
-                    if_exists="append", index=False
-                )
+            page.close()
+
+            if not captured:
+                print(f"  ✗ No data for {season_label}")
+                continue
+
+            if "players" in captured:
+                players_df = parse_players(captured["players"], season_label)
+                players_df.columns = [c.lower() for c in players_df.columns]
+                players_df.to_sql("understat_players", engine, if_exists="append", index=False)
                 print(f"  ✓ {season_label} — {len(players_df)} players saved")
-            else:
-                print(f"  ✗ {season_label} — no players key in response")
 
-            # --- TEAMS ---
-            if "teams" in data:
-                teams_df = parse_teams(data["teams"], season_label)
+            if "teams" in captured:
+                teams_df = parse_teams(captured["teams"], season_label)
                 if not teams_df.empty:
-                    teams_df.to_sql(
-                        "understat_teams", engine,
-                        if_exists="append", index=False
-                    )
-                    print(f"  ✓ {season_label} — {len(teams_df)} team match rows saved")
+                    teams_df.columns = [c.lower() for c in teams_df.columns]
+                    teams_df.to_sql("understat_teams", engine, if_exists="append", index=False)
 
-            # Polite pause between page loads
             time.sleep(2)
 
         browser.close()
@@ -255,20 +273,21 @@ def deduplicate(engine):
     Removes any duplicate rows that could arise from running the script
     more than once. Identifies duplicates by understat_id + season for
     players, and team_name + date for team rows.
+    PostgreSQL uses ctid (internal row ID) instead of SQLite's rowid.
     """
     print("\n  Deduplicating...")
     with engine.connect() as conn:
         conn.execute(text("""
             DELETE FROM understat_players
-            WHERE rowid NOT IN (
-                SELECT MIN(rowid) FROM understat_players
+            WHERE ctid NOT IN (
+                SELECT MIN(ctid) FROM understat_players
                 GROUP BY understat_id, season
             )
         """))
         conn.execute(text("""
             DELETE FROM understat_teams
-            WHERE rowid NOT IN (
-                SELECT MIN(rowid) FROM understat_teams
+            WHERE ctid NOT IN (
+                SELECT MIN(ctid) FROM understat_teams
                 GROUP BY understat_team_id, date
             )
         """))
