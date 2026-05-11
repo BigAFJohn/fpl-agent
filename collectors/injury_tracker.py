@@ -30,7 +30,7 @@ CONCEPTS TO UNDERSTAND BEFORE READING THIS SCRIPT
    However the 2025/26 archive data (loaded from vaastav) uses the same
    element IDs as the current player_history table — confirmed 820/832
    matching IDs. So we join injury_profiles → archive 2025-26 → player_history
-   using element ID. This gives us current season minutes for active players.
+   using player_id. This gives us current season minutes for active players.
 
 5. games_since_return — the re-injury risk window
    The first 3 games after returning from injury carry 2-3x the normal
@@ -77,7 +77,7 @@ def setup_injury_tables(engine):
     with engine.connect() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS injury_absences (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                id              SERIAL PRIMARY KEY,
                 player_id       INTEGER,
                 player_name     TEXT,
                 season          TEXT,
@@ -171,9 +171,8 @@ def collect_all_absences(engine):
     Runs absence detection across all players in player_history_archive
     plus current season from player_history.
 
-    player_history_archive uses 'element' (vaastav naming).
-    player_history uses 'player_id' (FPL API naming).
-    Both are normalised to 'player_id' in the queries.
+    Note: player_history_archive uses 'player_id' in PostgreSQL
+    (was renamed from 'element' during migration).
     """
     print("\n[1/3] Detecting absences from player history...")
 
@@ -182,19 +181,19 @@ def collect_all_absences(engine):
         conn.commit()
 
     archive_df = pd.read_sql("""
-        SELECT element as player_id,
-               name    as web_name,
+        SELECT player_id,
+               name AS web_name,
                round, minutes, season
         FROM player_history_archive
         WHERE minutes IS NOT NULL
-        ORDER BY element, season, round
+        ORDER BY player_id, season, round
     """, engine)
 
     current_df = pd.read_sql("""
         SELECT ph.player_id,
                p.web_name,
                ph.round, ph.minutes,
-               '2025-26' as season
+               '2025-26' AS season
         FROM player_history ph
         LEFT JOIN players p ON ph.player_id = p.id
         WHERE ph.minutes IS NOT NULL
@@ -214,9 +213,10 @@ def collect_all_absences(engine):
         players_processed += 1
 
     if total_absences:
-        pd.DataFrame(total_absences).to_sql(
-            "injury_absences", engine, if_exists="append", index=False
-        )
+        absences_df = pd.DataFrame(total_absences)
+        if "id" in absences_df.columns:
+            absences_df = absences_df.drop(columns=["id"])
+        absences_df.to_sql("injury_absences", engine, if_exists="append", index=False)
 
     print(f"  ✓ Processed {players_processed:,} player-seasons")
     print(f"  ✓ Detected {len(total_absences):,} absence periods")
@@ -242,12 +242,14 @@ def build_injury_profiles(engine):
     absences_df["weight"] = absences_df["season"].map(SEASON_WEIGHTS).fillna(0.5)
 
     games_df = pd.read_sql("""
-        SELECT element as player_id, season, COUNT(*) as games_played
-        FROM player_history_archive WHERE minutes > 0
-        GROUP BY element, season
+        SELECT player_id, season, COUNT(*) AS games_played
+        FROM player_history_archive
+        WHERE minutes > 0
+        GROUP BY player_id, season
         UNION ALL
         SELECT player_id, '2025-26', COUNT(*)
-        FROM player_history WHERE minutes > 0
+        FROM player_history
+        WHERE minutes > 0
         GROUP BY player_id
     """, engine)
     games_df["weight"] = games_df["season"].map(SEASON_WEIGHTS).fillna(0.5)
@@ -255,7 +257,7 @@ def build_injury_profiles(engine):
     total_weighted_games = games_df.groupby("player_id")["weighted_games"].sum()
 
     last_gw_map = dict(pd.read_sql("""
-        SELECT player_id, MAX(round) as last_gw
+        SELECT player_id, MAX(round) AS last_gw
         FROM player_history WHERE minutes > 0
         GROUP BY player_id
     """, engine).values)
@@ -284,7 +286,7 @@ def build_injury_profiles(engine):
             last_abs            = player_absences.sort_values("absence_end").iloc[-1]
             last_absence_gw     = int(last_abs["absence_end"])
             last_absence_season = last_abs["season"]
-            games_since_return  = 999  # No absence this season
+            games_since_return  = 999
 
         freq_score = min(frequency / 2.0, 1.0)
         dur_score  = min(avg_length / 6.0, 1.0)
@@ -317,9 +319,10 @@ def build_injury_profiles(engine):
         })
 
     if profiles:
-        pd.DataFrame(profiles).to_sql(
-            "injury_profiles", engine, if_exists="replace", index=False
-        )
+        profiles_df = pd.DataFrame(profiles)
+        if "id" in profiles_df.columns:
+            profiles_df = profiles_df.drop(columns=["id"])
+        profiles_df.to_sql("injury_profiles", engine, if_exists="replace", index=False)
         print(f"  ✓ Built profiles for {len(profiles):,} players")
 
     return len(profiles)
@@ -332,20 +335,16 @@ def build_injury_profiles(engine):
 def verify_profiles(engine):
     """
     Profile distribution + high-risk and reliable player lists.
-
-    Joins injury_profiles → player_history_archive (2025-26) → player_history
-    using element ID — confirmed 820/832 match. This handles FPL's ID
-    reassignment across seasons without needing fragile name matching.
+    Uses player_id to join across tables — no fragile name matching.
     """
     print("\n[3/3] Profile summary:")
 
-    # Distribution table
     rows = pd.read_sql("""
         SELECT reliability_label,
-               COUNT(*)                          as players,
-               ROUND(AVG(injury_prone_score), 3) as avg_score,
-               ROUND(AVG(avg_absence_length), 2) as avg_length,
-               ROUND(AVG(absences_per_10_games), 3) as avg_freq
+               COUNT(*)                          AS players,
+               ROUND(AVG(injury_prone_score)::numeric, 3) AS avg_score,
+               ROUND(AVG(avg_absence_length)::numeric, 2) AS avg_length,
+               ROUND(AVG(absences_per_10_games)::numeric, 3) AS avg_freq
         FROM injury_profiles
         GROUP BY reliability_label
         ORDER BY avg_score DESC
@@ -356,24 +355,21 @@ def verify_profiles(engine):
     for _, r in rows.iterrows():
         print(f"  {r['reliability_label']:<14} {r['players']:>8} {r['avg_score']:>10} {r['avg_length']:>8} {r['avg_freq']:>8}")
 
-    # High risk — use element ID bridge through 2025-26 archive
-    print(f"\n  🚨 High risk — recently returned (active players only):")
+    print(f"\n  High risk — recently returned (active players only):")
     risky = pd.read_sql("""
         SELECT ip.player_name,
-               ip.injury_prone_score     as score,
-               ip.games_since_return     as gs_ret,
-               ip.total_absences         as absences,
-               ip.avg_absence_length     as avg_len,
-               SUM(ph.minutes)           as mins_this_season
+               ip.injury_prone_score     AS score,
+               ip.games_since_return     AS gs_ret,
+               ip.total_absences         AS absences,
+               ip.avg_absence_length     AS avg_len,
+               SUM(ph.minutes)           AS mins_this_season
         FROM injury_profiles ip
-        JOIN player_history_archive arc
-            ON ip.player_id = arc.element AND arc.season = '2025-26'
-        JOIN player_history ph
-            ON arc.element = ph.player_id
+        JOIN player_history ph ON ip.player_id = ph.player_id
         WHERE ip.games_since_return BETWEEN 0 AND 5
           AND ip.injury_prone_score >= 0.5
-        GROUP BY ip.player_id
-        HAVING mins_this_season > 90
+        GROUP BY ip.player_id, ip.player_name, ip.injury_prone_score,
+                 ip.games_since_return, ip.total_absences, ip.avg_absence_length
+        HAVING SUM(ph.minutes) > 90
         ORDER BY ip.injury_prone_score DESC
         LIMIT 10
     """, engine)
@@ -386,24 +382,20 @@ def verify_profiles(engine):
     else:
         print("  None currently in re-injury risk window")
 
-    # Reliable players
-    print(f"\n  ✅ Most reliable active players:")
+    print(f"\n  Most reliable active players:")
     reliable = pd.read_sql("""
         SELECT ip.player_name,
-               ip.injury_prone_score  as score,
-               ip.total_absences      as absences,
-               SUM(ph.minutes)        as mins_this_season,
+               ip.injury_prone_score  AS score,
+               ip.total_absences      AS absences,
+               SUM(ph.minutes)        AS mins_this_season,
                p.total_points
         FROM injury_profiles ip
-        JOIN player_history_archive arc
-            ON ip.player_id = arc.element AND arc.season = '2025-26'
-        JOIN player_history ph
-            ON arc.element = ph.player_id
-        JOIN players p
-            ON ph.player_id = p.id
+        JOIN player_history ph ON ip.player_id = ph.player_id
+        JOIN players p ON ip.player_id = p.id
         WHERE ip.reliability_label = 'reliable'
-        GROUP BY ip.player_id
-        HAVING mins_this_season > 500
+        GROUP BY ip.player_id, ip.player_name, ip.injury_prone_score,
+                 ip.total_absences, p.total_points
+        HAVING SUM(ph.minutes) > 500
            AND p.total_points > 80
         ORDER BY ip.injury_prone_score ASC, p.total_points DESC
         LIMIT 10

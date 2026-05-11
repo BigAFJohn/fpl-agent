@@ -385,8 +385,12 @@ def etl_players(engine, run_at):
                 pass
         conn.commit()
 
-    update_cols = [c for c in df.columns if c != "id"]
-    rows = upsert_table(df, "players", ["id"], update_cols, engine)
+    # Players table: truncate and reload — faster than upsert for 836 rows
+    with engine.connect() as conn:
+        conn.execute(text("TRUNCATE TABLE players CASCADE"))
+        conn.commit()
+    df.to_sql("players", engine, if_exists="append", index=False, chunksize=500)
+    rows = len(df)
     print(f"    Upserted: {rows:,} rows")
     return rows, issues
 

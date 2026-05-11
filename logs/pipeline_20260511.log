@@ -1,0 +1,81 @@
+2026-05-11 14:31:45 | INFO | ==================================================
+2026-05-11 14:31:45 | INFO | FPL Pipeline starting
+2026-05-11 14:31:45 | INFO | ==================================================
+2026-05-11 14:31:45 | INFO | Starting FPL collector...
+2026-05-11 14:32:20 | ERROR | FPL collector failed: Execution failed on sql 'INSERT INTO player_history (player_id, element, fixture, round, opponent_team, was_home, kickoff_time, total_points, minutes, goals_scored, assists, clean_sheets, goals_conceded, own_goals, penalties_saved, penalties_missed, yellow_cards, red_cards, saves, bonus, bps, influence, creativity, threat, ict_index, value, transfers_balance, selected) VALUES (:player_id, :element, :fixture, :round, :opponent_team, :was_home, :kickoff_time, :total_points, :minutes, :goals_scored, :assists, :clean_sheets, :goals_conceded, :own_goals, :penalties_saved, :penalties_missed, :yellow_cards, :red_cards, :saves, :bonus, :bps, :influence, :creativity, :threat, :ict_index, :value, :transfers_balance, :selected)': (psycopg2.errors.UniqueViolation) duplicate key value violates unique constraint "uq_ph_player_round"
+DETAIL:  Key (player_id, round)=(1, 1) already exists.
+
+[SQL: INSERT INTO player_history (player_id, element, fixture, round, opponent_team, was_home, kickoff_time, total_points, minutes, goals_scored, assists, clean_sheets, goals_conceded, own_goals, penalties_saved, penalties_missed, yellow_cards, red_cards,  ... 569922 characters truncated ...  %(threat__999)s, %(ict_index__999)s, %(value__999)s, %(transfers_balance__999)s, %(selected__999)s)]
+[parameters: {'minutes__0': 90, 'fixture__0': 9, 'value__0': 55, 'penalties_saved__0': 0, 'selected__0': 1531911, 'total_points__0': 10, 'goals_scored__0': 0, 'bps__0': 38, 'saves__0': 7, 'was_home__0': False, 'creativity__0': '0.0', 'player_id__0': 1, 'transfers_balance__0': 0, 'red_cards__0': 0, 'kickoff_time__0': '2025-08-17T15:30:00Z', 'assists__0': 0, 'bonus__0': 3, 'penalties_missed__0': 0, 'clean_sheets__0': 1, 'own_goals__0': 0, 'ict_index__0': '4.9', 'opponent_team__0': 14, 'round__0': 1, 'element__0': 1, 'influence__0': '49.2', 'goals_conceded__0': 0, 'threat__0': '0.0', 'yellow_cards__0': 1, 'minutes__1': 90, 'fixture__1': 11, 'value__1': 55, 'penalties_saved__1': 0, 'selected__1': 2284634, 'total_points__1': 6, 'goals_scored__1': 0, 'bps__1': 28, 'saves__1': 1, 'was_home__1': True, 'creativity__1': '0.0', 'player_id__1': 1, 'transfers_balance__1': 218659, 'red_cards__1': 0, 'kickoff_time__1': '2025-08-23T16:30:00Z', 'assists__1': 0, 'bonus__1': 0, 'penalties_missed__1': 0, 'clean_sheets__1': 1, 'own_goals__1': 0, 'ict_index__1': '1.3', 'opponent_team__1': 11 ... 27900 parameters truncated ... 'goals_scored__998': 0, 'bps__998': 0, 'saves__998': 0, 'was_home__998': False, 'creativity__998': '0.0', 'player_id__998': 30, 'transfers_balance__998': 60072, 'red_cards__998': 0, 'kickoff_time__998': '2026-02-18T20:00:00Z', 'assists__998': 0, 'bonus__998': 0, 'penalties_missed__998': 0, 'clean_sheets__998': 0, 'own_goals__998': 0, 'ict_index__998': '0.0', 'opponent_team__998': 20, 'round__998': 26, 'element__998': 30, 'influence__998': '0.0', 'goals_conceded__998': 0, 'threat__998': '0.0', 'yellow_cards__998': 0, 'minutes__999': 0, 'fixture__999': 269, 'value__999': 73, 'penalties_saved__999': 0, 'selected__999': 81087, 'total_points__999': 0, 'goals_scored__999': 0, 'bps__999': 0, 'saves__999': 0, 'was_home__999': False, 'creativity__999': '0.0', 'player_id__999': 30, 'transfers_balance__999': -47877, 'red_cards__999': 0, 'kickoff_time__999': '2026-02-22T16:30:00Z', 'assists__999': 0, 'bonus__999': 0, 'penalties_missed__999': 0, 'clean_sheets__999': 0, 'own_goals__999': 0, 'ict_index__999': '0.0', 'opponent_team__999': 18, 'round__999': 27, 'element__999': 30, 'influence__999': '0.0', 'goals_conceded__999': 0, 'threat__999': '0.0', 'yellow_cards__999': 0}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-05-11 14:32:20 | ERROR | Pipeline halted at fpl_collector
+2026-05-11 14:32:20 | INFO | ==================================================
+2026-05-11 14:32:20 | INFO | Pipeline FAILED in 35s
+2026-05-11 14:32:20 | INFO |   ✗ fpl_collector
+2026-05-11 14:32:20 | INFO | ==================================================
+2026-05-11 14:37:01 | INFO | ==================================================
+2026-05-11 14:37:01 | INFO | FPL Pipeline starting
+2026-05-11 14:37:01 | INFO | ==================================================
+2026-05-11 14:37:01 | INFO | Starting FPL collector...
+2026-05-11 14:37:33 | ERROR | FPL collector failed: Execution failed on sql 'INSERT INTO player_history (player_id, element, fixture, round, opponent_team, was_home, kickoff_time, total_points, minutes, goals_scored, assists, clean_sheets, goals_conceded, own_goals, penalties_saved, penalties_missed, yellow_cards, red_cards, saves, bonus, bps, influence, creativity, threat, ict_index, value, transfers_balance, selected) VALUES (:player_id, :element, :fixture, :round, :opponent_team, :was_home, :kickoff_time, :total_points, :minutes, :goals_scored, :assists, :clean_sheets, :goals_conceded, :own_goals, :penalties_saved, :penalties_missed, :yellow_cards, :red_cards, :saves, :bonus, :bps, :influence, :creativity, :threat, :ict_index, :value, :transfers_balance, :selected)': (psycopg2.errors.UniqueViolation) duplicate key value violates unique constraint "uq_ph_player_round"
+DETAIL:  Key (player_id, round)=(1, 26) already exists.
+
+[SQL: INSERT INTO player_history (player_id, element, fixture, round, opponent_team, was_home, kickoff_time, total_points, minutes, goals_scored, assists, clean_sheets, goals_conceded, own_goals, penalties_saved, penalties_missed, yellow_cards, red_cards,  ... 569922 characters truncated ...  %(threat__999)s, %(ict_index__999)s, %(value__999)s, %(transfers_balance__999)s, %(selected__999)s)]
+[parameters: {'goals_conceded__0': 0, 'bps__0': 38, 'player_id__0': 1, 'goals_scored__0': 0, 'value__0': 55, 'creativity__0': '0.0', 'was_home__0': False, 'saves__0': 7, 'round__0': 1, 'ict_index__0': '4.9', 'selected__0': 1531911, 'yellow_cards__0': 1, 'total_points__0': 10, 'penalties_saved__0': 0, 'red_cards__0': 0, 'fixture__0': 9, 'assists__0': 0, 'kickoff_time__0': '2025-08-17T15:30:00Z', 'penalties_missed__0': 0, 'influence__0': '49.2', 'own_goals__0': 0, 'threat__0': '0.0', 'opponent_team__0': 14, 'clean_sheets__0': 1, 'bonus__0': 3, 'transfers_balance__0': 0, 'minutes__0': 90, 'element__0': 1, 'goals_conceded__1': 0, 'bps__1': 28, 'player_id__1': 1, 'goals_scored__1': 0, 'value__1': 55, 'creativity__1': '0.0', 'was_home__1': True, 'saves__1': 1, 'round__1': 2, 'ict_index__1': '1.3', 'selected__1': 2284634, 'yellow_cards__1': 0, 'total_points__1': 6, 'penalties_saved__1': 0, 'red_cards__1': 0, 'fixture__1': 11, 'assists__1': 0, 'kickoff_time__1': '2025-08-23T16:30:00Z', 'penalties_missed__1': 0, 'influence__1': '13.4', 'own_goals__1': 0, 'threat__1': '0.0' ... 27900 parameters truncated ... 'was_home__998': False, 'saves__998': 0, 'round__998': 26, 'ict_index__998': '0.0', 'selected__998': 135400, 'yellow_cards__998': 0, 'total_points__998': 0, 'penalties_saved__998': 0, 'red_cards__998': 0, 'fixture__998': 310, 'assists__998': 0, 'kickoff_time__998': '2026-02-18T20:00:00Z', 'penalties_missed__998': 0, 'influence__998': '0.0', 'own_goals__998': 0, 'threat__998': '0.0', 'opponent_team__998': 20, 'clean_sheets__998': 0, 'bonus__998': 0, 'transfers_balance__998': 60072, 'minutes__998': 0, 'element__998': 30, 'goals_conceded__999': 0, 'bps__999': 0, 'player_id__999': 30, 'goals_scored__999': 0, 'value__999': 73, 'creativity__999': '0.0', 'was_home__999': False, 'saves__999': 0, 'round__999': 27, 'ict_index__999': '0.0', 'selected__999': 81087, 'yellow_cards__999': 0, 'total_points__999': 0, 'penalties_saved__999': 0, 'red_cards__999': 0, 'fixture__999': 269, 'assists__999': 0, 'kickoff_time__999': '2026-02-22T16:30:00Z', 'penalties_missed__999': 0, 'influence__999': '0.0', 'own_goals__999': 0, 'threat__999': '0.0', 'opponent_team__999': 18, 'clean_sheets__999': 0, 'bonus__999': 0, 'transfers_balance__999': -47877, 'minutes__999': 0, 'element__999': 30}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-05-11 14:37:33 | ERROR | Pipeline halted at fpl_collector
+2026-05-11 14:37:33 | INFO | ==================================================
+2026-05-11 14:37:33 | INFO | Pipeline FAILED in 31s
+2026-05-11 14:37:33 | INFO |   ✗ fpl_collector
+2026-05-11 14:37:33 | INFO | ==================================================
+2026-05-11 14:40:30 | INFO | ==================================================
+2026-05-11 14:40:30 | INFO | FPL Pipeline starting
+2026-05-11 14:40:30 | INFO | ==================================================
+2026-05-11 14:40:30 | INFO | Starting FPL collector...
+2026-05-11 14:41:02 | ERROR | FPL collector failed: Execution failed on sql 'INSERT INTO player_history (player_id, element, fixture, round, opponent_team, was_home, kickoff_time, total_points, minutes, goals_scored, assists, clean_sheets, goals_conceded, own_goals, penalties_saved, penalties_missed, yellow_cards, red_cards, saves, bonus, bps, influence, creativity, threat, ict_index, value, transfers_balance, selected) VALUES (:player_id, :element, :fixture, :round, :opponent_team, :was_home, :kickoff_time, :total_points, :minutes, :goals_scored, :assists, :clean_sheets, :goals_conceded, :own_goals, :penalties_saved, :penalties_missed, :yellow_cards, :red_cards, :saves, :bonus, :bps, :influence, :creativity, :threat, :ict_index, :value, :transfers_balance, :selected)': (psycopg2.errors.UniqueViolation) duplicate key value violates unique constraint "uq_ph_player_round"
+DETAIL:  Key (player_id, round)=(1, 26) already exists.
+
+[SQL: INSERT INTO player_history (player_id, element, fixture, round, opponent_team, was_home, kickoff_time, total_points, minutes, goals_scored, assists, clean_sheets, goals_conceded, own_goals, penalties_saved, penalties_missed, yellow_cards, red_cards,  ... 569922 characters truncated ...  %(threat__999)s, %(ict_index__999)s, %(value__999)s, %(transfers_balance__999)s, %(selected__999)s)]
+[parameters: {'kickoff_time__0': '2025-08-17T15:30:00Z', 'selected__0': 1531911, 'threat__0': '0.0', 'penalties_missed__0': 0, 'assists__0': 0, 'bps__0': 38, 'own_goals__0': 0, 'saves__0': 7, 'creativity__0': '0.0', 'was_home__0': False, 'goals_scored__0': 0, 'value__0': 55, 'minutes__0': 90, 'yellow_cards__0': 1, 'goals_conceded__0': 0, 'influence__0': '49.2', 'total_points__0': 10, 'clean_sheets__0': 1, 'player_id__0': 1, 'penalties_saved__0': 0, 'fixture__0': 9, 'opponent_team__0': 14, 'bonus__0': 3, 'transfers_balance__0': 0, 'element__0': 1, 'ict_index__0': '4.9', 'round__0': 1, 'red_cards__0': 0, 'kickoff_time__1': '2025-08-23T16:30:00Z', 'selected__1': 2284634, 'threat__1': '0.0', 'penalties_missed__1': 0, 'assists__1': 0, 'bps__1': 28, 'own_goals__1': 0, 'saves__1': 1, 'creativity__1': '0.0', 'was_home__1': True, 'goals_scored__1': 0, 'value__1': 55, 'minutes__1': 90, 'yellow_cards__1': 0, 'goals_conceded__1': 0, 'influence__1': '13.4', 'total_points__1': 6, 'clean_sheets__1': 1, 'player_id__1': 1, 'penalties_saved__1': 0, 'fixture__1': 11, 'opponent_team__1': 11 ... 27900 parameters truncated ... 'own_goals__998': 0, 'saves__998': 0, 'creativity__998': '0.0', 'was_home__998': False, 'goals_scored__998': 0, 'value__998': 73, 'minutes__998': 0, 'yellow_cards__998': 0, 'goals_conceded__998': 0, 'influence__998': '0.0', 'total_points__998': 0, 'clean_sheets__998': 0, 'player_id__998': 30, 'penalties_saved__998': 0, 'fixture__998': 310, 'opponent_team__998': 20, 'bonus__998': 0, 'transfers_balance__998': 60072, 'element__998': 30, 'ict_index__998': '0.0', 'round__998': 26, 'red_cards__998': 0, 'kickoff_time__999': '2026-02-22T16:30:00Z', 'selected__999': 81087, 'threat__999': '0.0', 'penalties_missed__999': 0, 'assists__999': 0, 'bps__999': 0, 'own_goals__999': 0, 'saves__999': 0, 'creativity__999': '0.0', 'was_home__999': False, 'goals_scored__999': 0, 'value__999': 73, 'minutes__999': 0, 'yellow_cards__999': 0, 'goals_conceded__999': 0, 'influence__999': '0.0', 'total_points__999': 0, 'clean_sheets__999': 0, 'player_id__999': 30, 'penalties_saved__999': 0, 'fixture__999': 269, 'opponent_team__999': 18, 'bonus__999': 0, 'transfers_balance__999': -47877, 'element__999': 30, 'ict_index__999': '0.0', 'round__999': 27, 'red_cards__999': 0}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-05-11 14:41:02 | ERROR | Pipeline halted at fpl_collector
+2026-05-11 14:41:02 | INFO | ==================================================
+2026-05-11 14:41:02 | INFO | Pipeline FAILED in 31s
+2026-05-11 14:41:02 | INFO |   ✗ fpl_collector
+2026-05-11 14:41:02 | INFO | ==================================================
+2026-05-11 14:43:38 | INFO | ==================================================
+2026-05-11 14:43:38 | INFO | FPL Pipeline starting
+2026-05-11 14:43:38 | INFO | ==================================================
+2026-05-11 14:43:38 | INFO | Starting FPL collector...
+2026-05-11 14:52:01 | INFO | FPL collector complete (504s)
+2026-05-11 14:52:01 | INFO | Starting Understat scraper...
+2026-05-11 14:52:02 | ERROR | Understat scraper failed: run_understat_collection() got an unexpected keyword argument 'seasons'
+2026-05-11 14:52:02 | ERROR | Pipeline halted at understat
+2026-05-11 14:52:02 | INFO | ==================================================
+2026-05-11 14:52:02 | INFO | Pipeline FAILED in 504s
+2026-05-11 14:52:02 | INFO |   ✓ fpl_collector
+2026-05-11 14:52:02 | INFO |   ✗ understat
+2026-05-11 14:52:02 | INFO | ==================================================
+2026-05-11 16:11:34 | INFO | ==================================================
+2026-05-11 16:11:34 | INFO | FPL Pipeline starting
+2026-05-11 16:11:34 | INFO | ==================================================
+2026-05-11 16:11:34 | INFO | Starting FPL collector...
+2026-05-11 16:19:53 | INFO | FPL collector complete (499s)
+2026-05-11 16:19:53 | INFO | Starting Understat scraper...
+2026-05-11 16:20:17 | INFO | Understat scraper complete (24s)
+2026-05-11 16:20:17 | INFO | Starting ETL pipeline...
+2026-05-11 16:20:40 | INFO | ETL pipeline complete (23s)
+2026-05-11 16:20:40 | INFO | Starting news monitor...
+2026-05-11 16:20:52 | INFO | HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-11 16:20:54 | INFO | HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-11 16:20:54 | INFO | News monitor complete (14s)
+2026-05-11 16:20:54 | INFO | Starting injury tracker...
+2026-05-11 16:20:58 | INFO | Injury tracker complete (3s)
+2026-05-11 16:20:58 | INFO | ==================================================
+2026-05-11 16:20:58 | INFO | Pipeline complete in 563s
+2026-05-11 16:20:58 | INFO |   ✓ fpl_collector
+2026-05-11 16:20:58 | INFO |   ✓ understat
+2026-05-11 16:20:58 | INFO |   ✓ etl
+2026-05-11 16:20:58 | INFO |   ✓ news_monitor
+2026-05-11 16:20:58 | INFO |   ✓ injury_tracker
+2026-05-11 16:20:58 | INFO | ==================================================
