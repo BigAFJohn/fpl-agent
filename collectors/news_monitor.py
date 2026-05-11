@@ -102,7 +102,10 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 # =============================================================================
 
 def get_database_engine():
-    """Returns SQLAlchemy engine connected to the local SQLite database."""
+    import os
+    pg_url = os.environ.get("FPL_DB_URL")
+    if pg_url:
+        return create_engine(pg_url)
     return create_engine(f"sqlite:///{DB_PATH}")
 
 
