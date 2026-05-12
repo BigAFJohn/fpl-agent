@@ -73,9 +73,9 @@ from sqlalchemy import create_engine, text
 DB_PATH = "db/fpl.db"
 
 # Signal source weights — must sum to 1.0
-WEIGHT_FPL_STATUS  = 0.40
-WEIGHT_NEWS        = 0.30
-WEIGHT_MINUTES     = 0.20
+WEIGHT_FPL_STATUS  = 0.50
+WEIGHT_NEWS        = 0.25
+WEIGHT_MINUTES     = 0.15
 WEIGHT_INJURY      = 0.10
 
 # Hard override thresholds
@@ -154,13 +154,15 @@ def build_fpl_signal(status, chance):
     set by FPL staff based on official club communications. We trust it
     more than any other source.
     """
-    if chance is not None:
+    # Only trust chance_of_playing if it's meaningfully set
+    # 0.0 for an available player means the field wasn't updated, not that he won't play
+    if chance is not None and not (status == "a" and chance == 0):
         return float(chance) / 100.0
 
     # Fall back to status mapping if chance not set
     status_map = {
         "a": 0.85,   # Available — not guaranteed starter but probably plays
-        "d": 0.50,   # Doubtful — 50/50
+        "d": 0.65,   # Doubtful — 50/50
         "i": 0.05,   # Injured — almost certainly out
         "s": 0.02,   # Suspended — almost certainly out
         "u": 0.02,   # Unavailable — not in squad
@@ -411,7 +413,7 @@ def compute_lineup_probabilities(engine):
         combined = combined * injury_mult
 
         # Hard overrides — FPL official status takes precedence
-        if status == "i" or (chance is not None and chance == 0):
+        if status == "i" or (chance is not None and chance == 0 and status != "a"):
             combined = min(combined, MAX_PROB_INJURED)
         elif status == "u":
             combined = min(combined, MAX_PROB_UNAVAILABLE)
@@ -419,6 +421,10 @@ def compute_lineup_probabilities(engine):
             combined = max(combined, MIN_PROB_AVAILABLE)
         elif status == "s":
             combined = min(combined, 0.02)
+
+        # If FPL explicitly confirms availability (chance=100), trust it over minutes trend
+        elif status == "a" and chance == 100:
+            combined = max(combined, 0.82)
 
         combined = round(float(np.clip(combined, 0.0, 1.0)), 3)
 
