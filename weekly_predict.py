@@ -65,6 +65,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from flask_caching import logger
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -357,6 +359,15 @@ Examples:
 
         results["select"] = step_select(logger)
         results["report"] = step_report(logger)
+
+    # Claude agent briefing
+    try:
+        from fpl_agent import run_fpl_agent
+        run_fpl_agent()
+        results["agent"] = True
+    except Exception as e:
+        logger.warning(f"Agent briefing skipped: {e}")
+        results["agent"] = False
 
     duration = (datetime.now() - start).total_seconds()
 
