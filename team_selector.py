@@ -230,7 +230,10 @@ def select_optimal_squad(players_df):
     prob += pulp.lpSum(x[i] for i in fwd_idx) == SQUAD_FWD
 
     # Budget constraint
-    prices = players["price"].tolist()
+    prices = [
+    float(p) if p is not None and not (isinstance(p, float) and np.isnan(p)) else 5.0
+    for p in players["price"].tolist()
+    ]
     prob += pulp.lpSum(x[i] * prices[i] for i in range(n)) <= BUDGET
 
     # Max 3 per club

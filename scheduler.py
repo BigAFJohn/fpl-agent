@@ -23,33 +23,34 @@ CONCEPTS TO UNDERSTAND BEFORE READING THIS SCRIPT
 3. Pipeline dependency ordering
    Tasks must run in the right order:
    1. FPL collector (get raw data)
-   2. Historical loader (one-time, skip if already done)
-   3. Understat scraper (get xG data)
-   4. ETL pipeline (transform + validate + upsert)
-   5. News monitor (get injury signals)
-   6. Injury tracker (rebuild profiles from clean data)
+   2. Understat scraper (get xG data)
+   3. ETL pipeline (transform + validate + upsert)
+   4. News monitor (get injury signals)
+   5. Injury tracker (rebuild profiles from clean data)
+   6. [3am] Feature engineering → Predictions → Team selection → Agent
    We enforce this with sequential execution — each step waits for
    the previous one to complete successfully.
 
 4. Logging — why it matters for unattended runs
    When the scheduler runs at 2am while you sleep, you need to know
-   what happened. We write structured logs to airflow/logs/ (reusing
-   the folder Airflow created) with timestamps, durations, and any
-   errors. Check the log file in the morning to see what ran.
+   what happened. We write structured logs to logs/ directory with
+   timestamps, durations, and any errors. Check the log file in the
+   morning to see what ran.
 
-5. The run_once vs scheduled modes
-   run_pipeline_once() runs everything immediately — useful for testing
-   and manual refreshes. start_scheduler() runs everything on a timer
-   indefinitely. We always test with run_once first.
+5. The run modes
+   run      = run full data pipeline once now (~15 mins)
+   schedule = start background scheduler (runs forever)
+   news     = run news monitor only (fast)
+   predict  = run full prediction pipeline on existing data (~2 mins)
 """
 
 import os
 import sys
 import logging
+import importlib
 from datetime import datetime
 from pathlib import Path
 
-# Add project root to path so we can import our modules
 sys.path.insert(0, str(Path(__file__).parent))
 
 
@@ -73,22 +74,18 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
             logging.FileHandler(log_file),
-            logging.StreamHandler(),  # Also print to terminal
+            logging.StreamHandler(),
         ]
     )
     return logging.getLogger("fpl_pipeline")
 
 
 # =============================================================================
-# PIPELINE TASKS
+# DATA PIPELINE TASKS
 # =============================================================================
 
 def task_fpl_collector(logger):
-    """
-    Runs the FPL API collector.
-    Fetches current season player stats, fixtures, and gameweek history.
-    Runs with max_players=None for a full 832-player refresh.
-    """
+    """Fetches current season player stats, fixtures, and gameweek history."""
     logger.info("Starting FPL collector...")
     start = datetime.now()
     try:
@@ -103,16 +100,11 @@ def task_fpl_collector(logger):
 
 
 def task_understat_scraper(logger):
-    """
-    Runs the Understat xG/xA scraper.
-    Collects current season data only (2025-26) on scheduled runs
-    to avoid re-scraping all 4 seasons every night.
-    """
+    """Collects xG/xA data from Understat."""
     logger.info("Starting Understat scraper...")
     start = datetime.now()
     try:
         from collectors.understat_scraper import run_understat_collection
-        # Only refresh current season on nightly runs
         run_understat_collection()
         duration = (datetime.now() - start).total_seconds()
         logger.info(f"Understat scraper complete ({duration:.0f}s)")
@@ -123,10 +115,7 @@ def task_understat_scraper(logger):
 
 
 def task_etl(logger):
-    """
-    Runs the ETL pipeline — validates, transforms, and upserts all tables.
-    Must run AFTER collectors so it processes fresh data.
-    """
+    """Validates, transforms, and upserts all tables."""
     logger.info("Starting ETL pipeline...")
     start = datetime.now()
     try:
@@ -141,10 +130,7 @@ def task_etl(logger):
 
 
 def task_news_monitor(logger):
-    """
-    Runs the news monitor — collects FPL injury signals and parses
-    RSS articles with Claude for lineup signals.
-    """
+    """Collects FPL injury signals and parses RSS articles with Claude."""
     logger.info("Starting news monitor...")
     start = datetime.now()
     try:
@@ -159,10 +145,7 @@ def task_news_monitor(logger):
 
 
 def task_injury_tracker(logger):
-    """
-    Rebuilds injury profiles from the updated player history.
-    Must run AFTER ETL so it uses the latest cleaned data.
-    """
+    """Rebuilds injury profiles from updated player history."""
     logger.info("Starting injury tracker...")
     start = datetime.now()
     try:
@@ -177,12 +160,82 @@ def task_injury_tracker(logger):
 
 
 # =============================================================================
-# PIPELINE RUNNER
+# PREDICTION PIPELINE TASKS
+# =============================================================================
+
+def task_feature_engineering(logger):
+    """Rebuilds rolling form features from fresh data."""
+    logger.info("Starting feature engineering...")
+    start = datetime.now()
+    try:
+        for module_name, func_name in [
+            ("feature_engineering", "run_feature_engineering"),
+            ("fixture_difficulty",  "run_fixture_difficulty"),
+            ("lineup_probability",  "run_lineup_probability"),
+            ("feature_store",       "run_feature_store"),
+        ]:
+            module = importlib.import_module(module_name)
+            getattr(module, func_name)()
+        duration = (datetime.now() - start).total_seconds()
+        logger.info(f"Feature engineering complete ({duration:.0f}s)")
+        return True
+    except Exception as e:
+        logger.error(f"Feature engineering failed: {e}")
+        return False
+
+
+def task_predictions(logger):
+    """Retrains XGBoost and generates point predictions."""
+    logger.info("Starting predictions...")
+    start = datetime.now()
+    try:
+        from predict_points import run_predict_points
+        run_predict_points()
+        duration = (datetime.now() - start).total_seconds()
+        logger.info(f"Predictions complete ({duration:.0f}s)")
+        return True
+    except Exception as e:
+        logger.error(f"Predictions failed: {e}")
+        return False
+
+
+def task_team_selection(logger):
+    """Runs LP optimisation to select optimal team."""
+    logger.info("Starting team selection...")
+    start = datetime.now()
+    try:
+        from team_selector import run_team_selector
+        run_team_selector()
+        duration = (datetime.now() - start).total_seconds()
+        logger.info(f"Team selection complete ({duration:.0f}s)")
+        return True
+    except Exception as e:
+        logger.error(f"Team selection failed: {e}")
+        return False
+
+
+def task_agent_briefing(logger):
+    """Generates Claude-powered weekly briefing."""
+    logger.info("Starting agent briefing...")
+    start = datetime.now()
+    try:
+        from fpl_agent import run_fpl_agent
+        run_fpl_agent(use_cache=False)  # Always fresh on scheduled runs
+        duration = (datetime.now() - start).total_seconds()
+        logger.info(f"Agent briefing complete ({duration:.0f}s)")
+        return True
+    except Exception as e:
+        logger.error(f"Agent briefing failed: {e}")
+        return False
+
+
+# =============================================================================
+# COMPOSITE RUNNERS
 # =============================================================================
 
 def run_full_pipeline(logger=None):
     """
-    Runs the complete pipeline in dependency order:
+    Runs the complete data pipeline in dependency order:
     FPL → Understat → ETL → News → Injuries
 
     Each step must succeed before the next runs.
@@ -192,18 +245,18 @@ def run_full_pipeline(logger=None):
         logger = setup_logging()
 
     logger.info("=" * 50)
-    logger.info("FPL Pipeline starting")
+    logger.info("FPL Data Pipeline starting")
     logger.info("=" * 50)
 
     pipeline_start = datetime.now()
     results = {}
 
     tasks = [
-        ("fpl_collector",    task_fpl_collector),
-        ("understat",        task_understat_scraper),
-        ("etl",              task_etl),
-        ("news_monitor",     task_news_monitor),
-        ("injury_tracker",   task_injury_tracker),
+        ("fpl_collector",  task_fpl_collector),
+        ("understat",      task_understat_scraper),
+        ("etl",            task_etl),
+        ("news_monitor",   task_news_monitor),
+        ("injury_tracker", task_injury_tracker),
     ]
 
     for task_name, task_fn in tasks:
@@ -218,6 +271,50 @@ def run_full_pipeline(logger=None):
 
     logger.info("=" * 50)
     logger.info(f"Pipeline {'complete' if all_passed else 'FAILED'} in {duration:.0f}s")
+    for name, ok in results.items():
+        logger.info(f"  {'✓' if ok else '✗'} {name}")
+    logger.info("=" * 50)
+
+    return all_passed
+
+
+def run_full_predictions(logger=None):
+    """
+    Runs the full prediction pipeline on existing data:
+    Features → Predictions → Team Selection → Agent Briefing
+
+    Runs at 3am after the data pipeline completes at 2am.
+    Can also be triggered manually: python scheduler.py predict
+    """
+    if logger is None:
+        logger = setup_logging()
+
+    logger.info("=" * 50)
+    logger.info("FPL Prediction Pipeline starting")
+    logger.info("=" * 50)
+
+    pipeline_start = datetime.now()
+    results = {}
+
+    tasks = [
+        ("features",  task_feature_engineering),
+        ("predict",   task_predictions),
+        ("select",    task_team_selection),
+        ("agent",     task_agent_briefing),
+    ]
+
+    for task_name, task_fn in tasks:
+        success = task_fn(logger)
+        results[task_name] = success
+        if not success:
+            logger.error(f"Prediction pipeline halted at {task_name}")
+            break
+
+    duration = (datetime.now() - pipeline_start).total_seconds()
+    all_passed = all(results.values())
+
+    logger.info("=" * 50)
+    logger.info(f"Prediction pipeline {'complete' if all_passed else 'FAILED'} in {duration:.0f}s")
     for name, ok in results.items():
         logger.info(f"  {'✓' if ok else '✗'} {name}")
     logger.info("=" * 50)
@@ -242,12 +339,15 @@ def run_news_only(logger=None):
 
 def start_scheduler():
     """
-    Starts the APScheduler with two jobs:
+    Starts the APScheduler with three jobs:
 
-    1. Full pipeline — every night at 2:00am
+    1. Full data pipeline — every night at 2:00am
        Refreshes all data: FPL stats, xG, ETL transforms, injury profiles
 
-    2. News monitor — every 6 hours during matchday weeks
+    2. Prediction pipeline — every night at 3:00am
+       Runs after data pipeline: features, XGBoost, team selection, agent
+
+    3. News monitor — every 6 hours
        Keeps injury signals fresh without the overhead of a full pipeline
 
     Run this in a terminal and leave it running.
@@ -259,19 +359,31 @@ def start_scheduler():
     logger = setup_logging()
     scheduler = BlockingScheduler(timezone="Europe/London")
 
-    # Full pipeline — nightly at 2am
+    # Full data pipeline — nightly at 2am
     scheduler.add_job(
         func=run_full_pipeline,
         trigger=CronTrigger(hour=2, minute=0),
         id="full_pipeline",
-        name="Full FPL Pipeline",
+        name="Full FPL Data Pipeline",
         kwargs={"logger": logger},
-        max_instances=1,            # Never run two instances simultaneously
-        misfire_grace_time=3600,    # If missed, run within 1hr or skip
-        coalesce=True,              # If multiple missed, run once not many
+        max_instances=1,
+        misfire_grace_time=3600,
+        coalesce=True,
     )
 
-    # News monitor — every 6 hours (more frequent on matchday weeks)
+    # Prediction pipeline — nightly at 3am (after data pipeline)
+    scheduler.add_job(
+        func=run_full_predictions,
+        trigger=CronTrigger(hour=3, minute=0),
+        id="predictions",
+        name="FPL Prediction Pipeline",
+        kwargs={"logger": logger},
+        max_instances=1,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
+    # News monitor — every 6 hours
     scheduler.add_job(
         func=run_news_only,
         trigger=CronTrigger(hour="6,12,18,22"),
@@ -284,8 +396,9 @@ def start_scheduler():
     )
 
     logger.info("Scheduler started")
-    logger.info("  Full pipeline: daily at 02:00 London time")
-    logger.info("  News monitor:  06:00, 12:00, 18:00, 22:00")
+    logger.info("  Data pipeline  : daily at 02:00 London time")
+    logger.info("  Predictions    : daily at 03:00 London time")
+    logger.info("  News monitor   : 06:00, 12:00, 18:00, 22:00")
     logger.info("Press Ctrl+C to stop")
 
     try:
@@ -305,11 +418,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FPL Pipeline Scheduler")
     parser.add_argument(
         "mode",
-        choices=["run", "schedule", "news"],
+        choices=["run", "schedule", "news", "predict"],
         help=(
-            "run      = run full pipeline once now\n"
-            "schedule = start scheduled background runner\n"
-            "news     = run news monitor only"
+            "run      = run full data pipeline once now (~15 mins)\n"
+            "schedule = start background scheduler (runs forever)\n"
+            "news     = run news monitor only (fast)\n"
+            "predict  = run prediction pipeline on existing data (~2 mins)"
         )
     )
     args = parser.parse_args()
@@ -322,3 +436,5 @@ if __name__ == "__main__":
         start_scheduler()
     elif args.mode == "news":
         run_news_only(logger)
+    elif args.mode == "predict":
+        run_full_predictions(logger)
