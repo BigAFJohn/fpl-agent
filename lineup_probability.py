@@ -166,6 +166,7 @@ def build_fpl_signal(status, chance):
         "i": 0.05,   # Injured — almost certainly out
         "s": 0.02,   # Suspended — almost certainly out
         "u": 0.02,   # Unavailable — not in squad
+        "n": 0.02,   # Not announced — treat as unavailable until we know more
     }
     return status_map.get(status, 0.70)
 
