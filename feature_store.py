@@ -29,9 +29,9 @@ CONCEPTS TO UNDERSTAND BEFORE READING THIS SCRIPT
    - Injury: injury_prone_score, games_since_return
 
 3. The join strategy
-   player_features × fixture_difficulty: join on team_id + gameweek
-   player_features × lineup_probability: join on player_id + gameweek
-   For future gameweeks, actual_points is NULL — this is expected.
+   player_features x fixture_difficulty: join on team_id + gameweek
+   player_features x lineup_probability: join on player_id + gameweek
+   For future gameweeks, actual_points is NULL -- this is expected.
    The model trains on rows where actual_points IS NOT NULL, and
    predicts on rows where it IS NULL (upcoming fixtures).
 
@@ -42,11 +42,17 @@ CONCEPTS TO UNDERSTAND BEFORE READING THIS SCRIPT
    one based on whether the player's team is home or away in
    each fixture. This is the was_home flag in player_history.
 
-5. Current GW rows — the prediction target
+5. Current GW rows -- the prediction target
    For the most recent completed gameweek, actual_points is known.
    For the NEXT gameweek (upcoming), actual_points is NULL.
    We include both in model_features. The upcoming rows are what
    Phase 4 uses to generate weekly team recommendations.
+
+6. Fixture lookup fix (Phase 7b)
+   For prediction rows (latest GW), we must use the NEXT UNPLAYED
+   fixture, not the completed GW fixture. GW36 form data should
+   reference GW37 fixtures. Without this fix, the model predicts
+   using already-played opponents which is meaningless.
 """
 
 import os
@@ -71,16 +77,10 @@ def get_engine():
 
 
 def setup_model_features_table(engine):
-    """
-    Creates model_features — the final consolidated feature store.
-    This is the direct input to Phase 4's XGBoost model.
-    Dropped and rebuilt on each run.
-    """
     with engine.connect() as conn:
         conn.execute(text("DROP TABLE IF EXISTS model_features"))
         conn.execute(text("""
             CREATE TABLE model_features (
-                -- Identity
                 player_id               INTEGER,
                 season                  TEXT,
                 gameweek                INTEGER,
@@ -90,64 +90,42 @@ def setup_model_features_table(engine):
                 team_name               TEXT,
                 price                   NUMERIC(6,2),
                 was_home                BOOLEAN,
-
-                -- Target variable
                 actual_points           INTEGER,
-
-                -- Form features
                 avg_points_5gw          NUMERIC(6,2),
                 avg_points_10gw         NUMERIC(6,2),
                 avg_points_season       NUMERIC(6,2),
                 points_trend            NUMERIC(6,2),
-
-                -- Minutes / rotation
                 avg_minutes_5gw         NUMERIC(6,2),
                 avg_minutes_10gw        NUMERIC(6,2),
                 started_rate_5gw        NUMERIC(5,3),
                 full_game_rate_5gw      NUMERIC(5,3),
-
-                -- Attacking
                 avg_goals_5gw           NUMERIC(6,3),
                 avg_assists_5gw         NUMERIC(6,3),
                 avg_bonus_5gw           NUMERIC(6,3),
                 avg_bps_5gw             NUMERIC(6,2),
                 avg_ict_5gw             NUMERIC(7,3),
-
-                -- Defensive
                 clean_sheet_rate_5gw    NUMERIC(5,3),
                 avg_saves_5gw           NUMERIC(6,2),
                 avg_goals_conceded_5gw  NUMERIC(6,2),
-
-                -- xG from Understat
                 xg_season               NUMERIC(8,4),
                 xa_season               NUMERIC(8,4),
                 xgi_season              NUMERIC(8,4),
                 xg_per90_season         NUMERIC(8,4),
                 xgi_per90_season        NUMERIC(8,4),
-
-                -- Fixture difficulty
                 fixture_fdr             NUMERIC(4,2),
                 opponent_xga_5          NUMERIC(8,4),
                 fpl_fdr                 INTEGER,
                 opponent_name           TEXT,
-
-                -- Availability
                 lineup_probability      NUMERIC(5,3),
                 fpl_status              TEXT,
                 fpl_chance              INTEGER,
                 confidence_level        TEXT,
-
-                -- Injury
                 injury_prone_score      NUMERIC(5,3),
                 games_since_return      INTEGER,
-
-                -- Ownership
                 selected_by_percent     NUMERIC(6,2),
                 transfers_in_event      BIGINT,
                 transfers_out_event     BIGINT,
-
                 computed_at             TIMESTAMP,
-
                 PRIMARY KEY (player_id, season, gameweek)
             )
         """))
@@ -160,13 +138,8 @@ def setup_model_features_table(engine):
 # =============================================================================
 
 def build_model_features(engine):
-    """
-    Joins player_features + fixture_difficulty + lineup_probability
-    into the consolidated model_features table.
-    """
     print("\n[1/3] Loading source tables...")
 
-    # Load player features with team name and was_home
     pf = pd.read_sql("""
         SELECT pf.*,
                ph.was_home,
@@ -181,14 +154,12 @@ def build_model_features(engine):
     """, engine)
     print(f"  ✓ player_features: {len(pf):,} rows")
 
-    # Load fixture difficulty
     fd = pd.read_sql("""
         SELECT * FROM fixture_difficulty
         ORDER BY gameweek
     """, engine)
     print(f"  ✓ fixture_difficulty: {len(fd):,} rows")
 
-    # Load lineup probability — only columns that exist in the table
     lp = pd.read_sql("""
         SELECT player_id, gameweek,
                lineup_probability,
@@ -201,7 +172,7 @@ def build_model_features(engine):
 
     print("\n[2/3] Joining features...")
 
-    # Build fixture lookup — split into home and away rows
+    # Build fixture lookup -- split into home and away rows
     home_fix = fd[["gameweek", "home_team", "away_team",
                    "home_attack_fdr", "home_opp_xga_5",
                    "fpl_fdr_home", "finished"]].copy()
@@ -219,11 +190,24 @@ def build_model_features(engine):
     all_fix = pd.concat([home_fix, away_fix], ignore_index=True)
     fixture_map = all_fix.set_index(["team_name", "gameweek"])
 
+    # Build per-team lookup of next unplayed fixture gameweek
+    # Used to redirect prediction rows to upcoming fixtures
+    unplayed = all_fix[all_fix["finished"] == False].copy()
+    next_fix_gw = (
+        unplayed.groupby("team_name")["gameweek"]
+        .min()
+        .to_dict()
+    )
+
+    # Latest GW in current season -- these are the prediction rows
+    latest_gw = int(
+        pf[pf["season"] == "2025-26"]["gameweek"].max()
+    ) if not pf[pf["season"] == "2025-26"].empty else 0
+
     # Build lineup probability lookup
     lp_map = lp.set_index(["player_id", "gameweek"])
 
     def _f(val):
-        """Safe float conversion."""
         if val is None:
             return None
         try:
@@ -233,12 +217,10 @@ def build_model_features(engine):
             return None
 
     def _i(val):
-        """Safe int conversion."""
         f = _f(val)
         return int(f) if f is not None else None
 
     def get_fix(team_name, gameweek, col):
-        """Get a fixture column value for a team+gameweek."""
         key = (team_name, gameweek)
         if key not in fixture_map.index:
             return None
@@ -250,6 +232,17 @@ def build_model_features(engine):
             return None
         return v
 
+    def is_finished(team_name, gameweek):
+        """Returns True if this team's fixture for this GW is finished."""
+        key = (team_name, gameweek)
+        if key not in fixture_map.index:
+            return True
+        val = fixture_map.loc[key]
+        if isinstance(val, pd.DataFrame):
+            return bool(val["finished"].iloc[0])
+        finished = val.get("finished")
+        return bool(finished) if finished is not None else True
+
     rows = []
     total = len(pf)
     processed = 0
@@ -260,24 +253,29 @@ def build_model_features(engine):
         player_id = int(row["player_id"])
         season    = str(row["season"])
 
-        # Fixture features — 2025-26 only
         fix_fdr  = None
         opp_xga  = None
         fpl_fdr  = None
         opp_name = None
 
         if season == "2025-26" and team_name:
-            fix_fdr  = get_fix(team_name, gameweek, "fixture_fdr")
-            opp_xga  = get_fix(team_name, gameweek, "opponent_xga_5")
-            fpl_fdr  = get_fix(team_name, gameweek, "fpl_fdr")
-            opp_name = get_fix(team_name, gameweek, "opponent_name")
+            # KEY FIX: For prediction rows (latest completed GW), look up
+            # the next UNPLAYED fixture rather than the completed one.
+            # This ensures Thiago shows Crystal Palace (GW37) not Man City
+            # (GW36 already played), Rogers shows Liverpool not Burnley, etc.
+            fix_gw = gameweek
+            if gameweek == latest_gw and is_finished(team_name, gameweek):
+                fix_gw = next_fix_gw.get(team_name, gameweek)
 
-        # Lineup probability — current GW only
+            fix_fdr  = get_fix(team_name, fix_gw, "fixture_fdr")
+            opp_xga  = get_fix(team_name, fix_gw, "opponent_xga_5")
+            fpl_fdr  = get_fix(team_name, fix_gw, "fpl_fdr")
+            opp_name = get_fix(team_name, fix_gw, "opponent_name")
+
         lp_prob   = None
         lp_status = None
         lp_chance = None
         lp_conf   = None
-        # Injury data — prefer lineup_probability table, fall back to player_features
         inj_score = _f(row.get("injury_prone_score"))
         gsr       = _i(row.get("games_since_return"))
 
@@ -290,8 +288,7 @@ def build_model_features(engine):
             lp_status = lp_row.get("fpl_status")
             lp_chance = lp_row.get("fpl_chance")
             lp_conf   = lp_row.get("confidence_level")
-            # Override injury score from lineup table if available
-            lp_inj = lp_row.get("injury_prone_score")
+            lp_inj    = lp_row.get("injury_prone_score")
             if lp_inj is not None:
                 inj_score = _f(lp_inj)
 
@@ -361,10 +358,6 @@ def build_model_features(engine):
 # =============================================================================
 
 def verify_model_features(engine):
-    """
-    Final sanity checks on the consolidated feature store.
-    Shows feature coverage and top predicted picks for next gameweek.
-    """
     print("\n[3/3] Feature store verification")
 
     coverage = pd.read_sql(text("""
@@ -394,8 +387,7 @@ def verify_model_features(engine):
         print(f"  {r['season']:<10} {rows:>7,} {int(r['players']):>8} "
               f"{fix_pct:>5} {lin_pct:>5} {xg_pct:>5} {inj_pct:>5} {avg_pts:>7}")
 
-    # Top picks — form × lineup_prob × fixture ease
-    print("\n  Top GW picks (form × lineup_prob × fixture ease):")
+    print("\n  Top GW picks (form x lineup_prob x fixture ease):")
     top = pd.read_sql(text("""
         SELECT web_name, position, team_name, price,
                avg_points_5gw,
@@ -440,13 +432,6 @@ def verify_model_features(engine):
 # =============================================================================
 
 def run_feature_store():
-    """
-    Consolidates all Phase 3 features into model_features table.
-    1. Joins player_features + fixture_difficulty + lineup_probability
-    2. Selects home/away FDR based on each player's fixture
-    3. Writes consolidated model_features table
-    4. Verifies coverage and shows top picks
-    """
     start = datetime.now()
 
     print("=" * 60)
