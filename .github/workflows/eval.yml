@@ -1,21 +1,5 @@
 name: FPL Agent Eval Suite
 
-# =============================================================================
-# WHEN THIS RUNS
-# =============================================================================
-# 1. Every Saturday 07:00 UTC — after the Friday FPL deadline
-# 2. On every push to main — regression check after code changes
-# 3. On every PR to main — fails PR if rule-based evals fail
-# 4. Manual trigger — useful after a fresh agent run
-#
-# REPORTING STRATEGY:
-#   No artifact uploads — avoids GitHub free tier storage quota limits.
-#   Allure report is generated and deployed directly to GitHub Pages.
-#   View at: https://<owner>.github.io/<repo>/allure-history/
-#
-# ONLY ONE SECRET NEEDED: ANTHROPIC_API_KEY
-# =============================================================================
-
 on:
   schedule:
     - cron: '0 7 * * 6'
@@ -28,12 +12,15 @@ on:
 jobs:
 
   # ===========================================================================
-  # JOB 1 — Rule-based evals (fast, free, no API cost)
-  # Runs on every push and PR
+  # JOB 1 — Rule-based evals + Allure report to GitHub Pages
   # ===========================================================================
   rule_based_evals:
     name: Rule-Based Evals
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -49,11 +36,18 @@ jobs:
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements-ci.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          restore-keys: ${{ runner.os }}-pip-
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -r requirements-ci.txt
+
+      - name: Install Allure CLI
+        run: |
+          wget -q https://github.com/allure-framework/allure2/releases/download/2.27.0/allure-2.27.0.tgz
+          tar -xzf allure-2.27.0.tgz
+          sudo mv allure-2.27.0 /opt/allure
+          sudo ln -s /opt/allure/bin/allure /usr/local/bin/allure
+          allure --version
 
       - name: Create mock agent cache for CI
         run: |
@@ -68,8 +62,7 @@ jobs:
 
           Thiago leads all model predictions with 5.94 adjusted points, backed
           by a 0.89 lineup probability. His xGI of 27.85 this season demonstrates
-          consistent attacking returns, making him the optimal captain choice
-          despite the moderate fixture difficulty of 3.0.
+          consistent attacking returns, making him the optimal captain choice.
 
           **Vice-Captain: Bruno Fernandes** (5.08 adj pts vs Nott'm Forest, FDR=2.8)
           provides excellent backup with a favourable fixture against Forest.
@@ -77,42 +70,30 @@ jobs:
 
           <transfers>
           **1. Gakpo OUT → Rice IN**
-          - Sell Gakpo: faces Aston Villa (FDR=4.3), 3rd strongest defence (xGA=1.107/5gw)
-          - Buy Rice: £7.2m, adj=3.74 vs Burnley (FDR=1.1), one of the easiest fixtures
-          - Price difference: -£0.1m (saves budget)
+          - Sell Gakpo: faces Aston Villa (FDR=4.3), xGA=1.107/5gw
+          - Buy Rice: £7.2m, adj=3.74 vs Burnley (FDR=1.1)
+          - Price difference: -£0.1m
 
-          **No further transfers recommended.** Starting XI contains 7 of the top 20
-          model predictions. Avoid unnecessary hits.
+          **No further transfers recommended.**
           </transfers>
 
           <risks>
-          1. **Struijk hip injury (71% lineup probability)** — 75% chance of playing.
-          Monitor team news before the Friday deadline. If ruled out, Yoro (82% linp)
-          auto-subs but provides minimal predicted points coverage.
-
-          2. **Gakpo vs Aston Villa (FDR=4.3)** — Villa have the 3rd best defensive
-          record by xGA (1.107/5gw). His 3.78 adjusted points may be optimistic.
-
-          3. **Thiago captaincy vs Crystal Palace (FDR=3.0)** — Crystal Palace rank
-          10th in defence (xGA=1.549/5gw). If risk-averse, Bruno Fernandes vs
-          Nott'm Forest (FDR=2.8) is the safer captaincy choice.
+          1. **Struijk hip injury (71% lineup probability)** — monitor before deadline.
+          2. **Gakpo vs Aston Villa (FDR=4.3)** — xGA=1.107/5gw, 3rd best defence.
+          3. **Thiago vs Crystal Palace (FDR=3.0)** — xGA=1.549/5gw, manageable risk.
           </risks>
 
           <summary>
-          For GW37, captain Thiago against Crystal Palace — his 5.94 adjusted points
-          lead all predictions and his season xGI of 27.85 demonstrates the ceiling
-          needed for captaincy. The priority transfer is Gakpo OUT for Rice IN, swapping
-          Aston Villa's elite defence (FDR=4.3, xGA=1.107) for Burnley's weak backline
-          (FDR=1.1). Monitor Struijk's hip injury before deadline as he is your first
-          bench cover. Contrarian observation: Rogers faces Liverpool at FDR=1.3 but
-          Liverpool xGA=2.217/5gw suggests this rating may understate their defensive
-          threat.
+          Captain Thiago (5.94 adj pts) vs Crystal Palace. Key transfer: Gakpo OUT
+          for Rice IN (FDR 4.3 → 1.1). Monitor Struijk hip injury before deadline.
+          Contrarian: Rogers faces Liverpool (FDR=1.3) but Liverpool xGA=2.217/5gw
+          suggests this rating may understate their defensive threat.
           </summary>
           """
 
           cache = {"gw37": mock_response.strip()}
           Path("models/agent_cache.json").write_text(json.dumps(cache, indent=2))
-          print("Mock agent cache created for CI")
+          print("Mock agent cache created")
           EOF
 
       - name: Run rule-based eval tests
@@ -122,38 +103,36 @@ jobs:
             --tb=short \
             --alluredir=allure-results
 
-      - name: Get Allure history from gh-pages
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: gh-pages
-        continue-on-error: true
-
-      - name: Copy Allure history for trend charts
+      - name: Restore Allure history from gh-pages
         run: |
-          if [ -d "gh-pages/allure-history" ]; then
-            cp -r gh-pages/allure-history allure-results/history
-            echo "Allure history restored for trend charts"
+          git fetch origin gh-pages --depth=1 2>/dev/null || echo "gh-pages branch not found yet"
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git checkout origin/gh-pages -- allure-history 2>/dev/null || echo "No history yet"
+            if [ -d "allure-history" ]; then
+              cp -r allure-history/last-20-runs allure-results/history 2>/dev/null || true
+              echo "Allure history restored"
+            fi
           else
-            echo "No prior history — first run"
+            echo "First run — no history to restore"
           fi
         continue-on-error: true
 
-      - name: Generate Allure report
-        uses: allure-framework/allure-report-action@v2
-        with:
-          allure_results: allure-results
-          allure_history: allure-history
-          keep_reports: 20
+      - name: Generate Allure HTML report
+        run: |
+          allure generate allure-results \
+            --clean \
+            --output allure-history \
+            --single-file
+          echo "Allure report generated"
 
-      - name: Deploy Allure report to GitHub Pages
+      - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         if: github.ref == 'refs/heads/main'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: allure-history
-          destination_dir: allure-history
+          keep_files: true
 
       - name: Post report URL to PR
         if: github.event_name == 'pull_request'
@@ -162,7 +141,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo  = context.repo.repo;
-            const url   = `https://${owner}.github.io/${repo}/allure-history/`;
+            const url   = `https://${owner}.github.io/${repo}/`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: owner,
@@ -170,11 +149,11 @@ jobs:
               body: [
                 "## 📊 Eval Report",
                 "",
-                `[View Allure Trend Report](${url})`,
+                `[View Allure Report](${url})`,
                 "",
                 "| Job | Status |",
                 "|-----|--------|",
-                `| Rule-based evals | ✅ 24 passed |`,
+                "| Rule-based evals | ✅ 24 passed |",
               ].join("\n")
             });
 
@@ -186,6 +165,9 @@ jobs:
     name: DeepEval Semantic Metrics (Claude Judge)
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -201,6 +183,13 @@ jobs:
           pip install -r requirements-ci.txt
           pip install deepeval
 
+      - name: Install Allure CLI
+        run: |
+          wget -q https://github.com/allure-framework/allure2/releases/download/2.27.0/allure-2.27.0.tgz
+          tar -xzf allure-2.27.0.tgz
+          sudo mv allure-2.27.0 /opt/allure
+          sudo ln -s /opt/allure/bin/allure /usr/local/bin/allure
+
       - name: Create agent cache for DeepEval
         run: |
           mkdir -p models
@@ -211,29 +200,24 @@ jobs:
           mock_response = """
           <captain>
           **Captain: Thiago (5.94 adjusted points vs Crystal Palace, FDR=3.0)**
-
-          Thiago leads all model predictions with 5.94 adjusted points, backed
-          by a 0.89 lineup probability and season xGI of 27.85.
-
+          Lineup probability 0.89, xGI 27.85 this season.
           **Vice-Captain: Bruno Fernandes** (5.08 adj pts vs Nott'm Forest, FDR=2.8).
           </captain>
 
           <transfers>
-          **1. Gakpo OUT → Rice IN**
-          Gakpo faces Aston Villa (FDR=4.3, xGA=1.107/5gw).
-          Rice: £7.2m, adj=3.74 vs Burnley (FDR=1.1). Price diff: -£0.1m.
+          **Gakpo OUT → Rice IN**: Aston Villa FDR=4.3 vs Burnley FDR=1.1.
+          Rice £7.2m adj=3.74. Price diff: -£0.1m.
           </transfers>
 
           <risks>
-          1. Struijk hip injury (71% lineup probability, 75% chance of playing).
-          2. Gakpo vs Aston Villa (FDR=4.3, xGA=1.107/5gw).
-          3. Thiago captaincy vs Crystal Palace (FDR=3.0, xGA=1.549/5gw).
+          1. Struijk hip injury 71% lineup probability.
+          2. Gakpo vs Aston Villa FDR=4.3 xGA=1.107/5gw.
+          3. Thiago vs Crystal Palace FDR=3.0 xGA=1.549/5gw.
           </risks>
 
           <summary>
-          Captain Thiago (5.94 adj pts) vs Crystal Palace. Key transfer: Gakpo OUT
-          for Rice IN (FDR 4.3 → 1.1). Monitor Struijk fitness. Rogers faces
-          Liverpool at FDR=1.3 but Liverpool xGA=2.217/5gw.
+          Captain Thiago 5.94 adj pts. Transfer Gakpo to Rice FDR 4.3 to 1.1.
+          Watch Struijk. Rogers vs Liverpool FDR=1.3 but xGA=2.217/5gw.
           </summary>
           """
 
@@ -249,35 +233,20 @@ jobs:
           pytest tests/evals/test_deepeval_agent.py \
             -v \
             --tb=short \
-            --alluredir=allure-results
+            --alluredir=allure-results-deepeval
 
-      - name: Get Allure history from gh-pages
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: gh-pages
-        continue-on-error: true
-
-      - name: Copy Allure history
+      - name: Generate DeepEval Allure report
         run: |
-          if [ -d "gh-pages/allure-history" ]; then
-            cp -r gh-pages/allure-history allure-results/history
-          fi
-        continue-on-error: true
-
-      - name: Generate Allure report
-        uses: allure-framework/allure-report-action@v2
-        with:
-          allure_results: allure-results
-          allure_report: allure-history
-          keep_reports: 20
-          gh_pages: gh-pages
+          allure generate allure-results-deepeval \
+            --clean \
+            --output allure-history-deepeval \
+            --single-file
 
       - name: Deploy DeepEval report to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
-        if: github.ref == 'refs/heads/main'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
-          publish_dir: allure-history
-          destination_dir: allure-history-deepeval
+          publish_dir: allure-history-deepeval
+          destination_dir: deepeval
+          keep_files: true
