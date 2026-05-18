@@ -66,7 +66,7 @@ def select_team_from_pool(players_df):
     Runs the actual team selector on a player pool.
     Returns the selected team DataFrame.
     """
-    from team_selector import select_optimal_squad, format_and_save_team
+    from prediction.team_selector import select_optimal_squad, format_and_save_team
     import os
     from sqlalchemy import create_engine
 
