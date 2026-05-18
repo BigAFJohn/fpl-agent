@@ -56,7 +56,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pytest allure-pytest
-          pip install -r requirements.txt
+          pip install -r requirements-ci.txt
 
       - name: Create mock agent cache for CI
         # In CI we use a fixture response representing a typical agent output.
@@ -158,7 +158,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pytest allure-pytest deepeval anthropic
-          pip install -r requirements.txt
+          pip install -r requirements-ci.txt
 
       - name: Create agent cache for DeepEval
         run: |
