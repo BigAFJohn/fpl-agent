@@ -26,3 +26,37 @@ __pycache__/
 # VS Code settings
 .vscode/models/*.pkl
 models/agent_cache.json
+
+# DeepEval
+.deepeval
+.deepeval-cache.json
+
+# Allure
+allure-results/
+allure-report/
+allure-history/
+
+# Logs (already have db/*.db but adding explicitly)
+logs/
+
+# Models (binaries and cache — not code)
+models/*.pkl
+models/agent_cache.json
+models/backtest_results.json
+
+# launchd logs
+logs/launchd_stdout.log
+logs/launchd_stderr.log
+
+# Mac
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Environment
+.env
+*.env
