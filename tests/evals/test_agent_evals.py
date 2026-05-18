@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pytest
-from fpl_agent import parse_response
+from agent.fpl_agent import parse_response
 
 
 # =============================================================================

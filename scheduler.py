@@ -119,7 +119,7 @@ def task_etl(logger):
     logger.info("Starting ETL pipeline...")
     start = datetime.now()
     try:
-        from etl_pipeline import run_etl
+        from pipeline.etl_pipeline import run_etl
         run_etl()
         duration = (datetime.now() - start).total_seconds()
         logger.info(f"ETL pipeline complete ({duration:.0f}s)")
@@ -169,10 +169,10 @@ def task_feature_engineering(logger):
     start = datetime.now()
     try:
         for module_name, func_name in [
-            ("feature_engineering", "run_feature_engineering"),
-            ("fixture_difficulty",  "run_fixture_difficulty"),
-            ("lineup_probability",  "run_lineup_probability"),
-            ("feature_store",       "run_feature_store"),
+            ("pipeline.feature_engineering", "run_feature_engineering"),
+            ("pipeline.fixture_difficulty",  "run_fixture_difficulty"),
+            ("pipeline.lineup_probability",  "run_lineup_probability"),
+            ("pipeline.feature_store",       "run_feature_store"),
         ]:
             module = importlib.import_module(module_name)
             getattr(module, func_name)()
@@ -189,7 +189,7 @@ def task_predictions(logger):
     logger.info("Starting predictions...")
     start = datetime.now()
     try:
-        from predict_points import run_predict_points
+        from prediction.predict_points import run_predict_points
         run_predict_points()
         duration = (datetime.now() - start).total_seconds()
         logger.info(f"Predictions complete ({duration:.0f}s)")
@@ -204,7 +204,7 @@ def task_team_selection(logger):
     logger.info("Starting team selection...")
     start = datetime.now()
     try:
-        from team_selector import run_team_selector
+        from prediction.team_selector import run_team_selector
         run_team_selector()
         duration = (datetime.now() - start).total_seconds()
         logger.info(f"Team selection complete ({duration:.0f}s)")
@@ -219,7 +219,7 @@ def task_agent_briefing(logger):
     logger.info("Starting agent briefing...")
     start = datetime.now()
     try:
-        from fpl_agent import run_fpl_agent
+        from agent.fpl_agent import run_fpl_agent
         run_fpl_agent(use_cache=False)  # Always fresh on scheduled runs
         duration = (datetime.now() - start).total_seconds()
         logger.info(f"Agent briefing complete ({duration:.0f}s)")

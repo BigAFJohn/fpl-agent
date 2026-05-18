@@ -65,7 +65,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from flask_caching import logger
+from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -105,7 +105,7 @@ def step_collect(logger):
     steps = [
         ("FPL collector",    "collectors.fpl_collector",    "run_collection",      {"max_players": None}),
         ("Understat scraper","collectors.understat_scraper", "run_understat_collection", {}),
-        ("ETL pipeline",     "etl_pipeline",                "run_etl",             {}),
+        ("ETL pipeline",     "pipeline.etl_pipeline",                "run_etl",             {}),
         ("News monitor",     "collectors.news_monitor",     "run_news_monitor",    {}),
         ("Injury tracker",   "collectors.injury_tracker",   "run_injury_tracker",  {}),
     ]
@@ -131,10 +131,10 @@ def step_features(logger):
     logger.info("=" * 50)
 
     steps = [
-        ("Form features",      "feature_engineering", "run_feature_engineering"),
-        ("Fixture difficulty", "fixture_difficulty",  "run_fixture_difficulty"),
-        ("Lineup probability", "lineup_probability",  "run_lineup_probability"),
-        ("Feature store",      "feature_store",       "run_feature_store"),
+        ("Form features",      "pipeline.feature_engineering", "run_feature_engineering"),
+        ("Fixture difficulty", "pipeline.fixture_difficulty",  "run_fixture_difficulty"),
+        ("Lineup probability", "pipeline.lineup_probability",  "run_lineup_probability"),
+        ("Feature store",      "pipeline.feature_store",       "run_feature_store"),
     ]
 
     for name, module_path, func_name in steps:
@@ -158,7 +158,7 @@ def step_predict(logger):
     logger.info("=" * 50)
 
     try:
-        from predict_points import run_predict_points
+        from prediction.predict_points import run_predict_points
         run_predict_points()
         logger.info("  ✓ Predictions generated")
         return True
@@ -174,7 +174,7 @@ def step_select(logger):
     logger.info("=" * 50)
 
     try:
-        from team_selector import run_team_selector
+        from prediction.team_selector import run_team_selector
         run_team_selector()
         logger.info("  ✓ Team selected")
         return True
@@ -362,7 +362,7 @@ Examples:
 
     # Claude agent briefing
     try:
-        from fpl_agent import run_fpl_agent
+        from agent.fpl_agent import run_fpl_agent
         run_fpl_agent()
         results["agent"] = True
     except Exception as e:

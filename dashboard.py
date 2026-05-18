@@ -774,7 +774,7 @@ def main():
                         </div>""", unsafe_allow_html=True)
 
                 if st.button("🔄 Regenerate (calls Claude API)"):
-                    from fpl_agent import run_fpl_agent
+                    from agent.fpl_agent import run_fpl_agent
                     with st.spinner("Calling Claude..."):
                         run_fpl_agent(force_refresh=True)
                     st.cache_data.clear()

@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pytest
-from lineup_probability import (
+from pipeline.lineup_probability import (
     build_fpl_signal,
     build_minutes_signal,
     build_injury_signal,
