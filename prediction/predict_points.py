@@ -518,6 +518,21 @@ def run_predict_points():
 
     # Show results
     show_predictions(engine)
+    # Run captain classifier
+    print("\n[6/6] Running captain classifier...")
+    try:
+        from prediction.captain_model import (
+            load_captain_model, score_predictions, run_captain_model
+        )
+        captain_model, cap_accuracy = load_captain_model()
+        if captain_model is None:
+            print("  First run — training captain classifier...")
+            captain_model, _ = run_captain_model()
+        else:
+            score_predictions(captain_model, engine)
+            print(f"  ✓ Captain scores added (model accuracy: {cap_accuracy:.1%})")
+    except Exception as e:
+        print(f"  ⚠ Captain classifier skipped: {e}")
 
     duration = (datetime.now() - start).total_seconds()
     print(f"\n{'='*60}")

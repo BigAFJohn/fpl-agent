@@ -150,6 +150,7 @@ def load_predictions(engine):
     df = pd.read_sql("""
         SELECT p.player_id, p.web_name, p.position, p.team_name,
                p.price, p.predicted_points, p.adjusted_points,
+               p.adjusted_points / 10.0 AS captain_score,
                p.lineup_probability, p.gameweek,
                p.opponent_name, p.fixture_fdr, p.fpl_status
         FROM predictions p
@@ -291,6 +292,21 @@ def select_optimal_squad(players_df):
     squad_idx   = [i for i in range(n) if pulp.value(x[i]) > 0.5]
     start_idx   = [i for i in range(n) if pulp.value(s[i]) > 0.5]
     captain_idx = [i for i in range(n) if pulp.value(c[i]) > 0.5]
+
+    # Override LP captain with captain_score if available
+    # LP picks highest adjusted_points — we want highest captain_score
+    if "captain_score" in players.columns and start_idx:
+        starters_df = players.iloc[start_idx].copy()
+        cap_scores  = pd.to_numeric(
+            starters_df["captain_score"], errors="coerce"
+        ).fillna(0)
+        if cap_scores.max() > 0:
+            best_cap_pos = cap_scores.idxmax()
+            captain_idx  = [best_cap_pos]
+            cap_name     = players.loc[best_cap_pos, "web_name"]
+            cap_score    = cap_scores.max()
+            print(f"    Captain (captain_score): {cap_name} "
+                  f"(score: {cap_score:.4f})")
 
     total_cost = sum(prices[i] for i in squad_idx)
     total_pred = sum(adj_pts[i] for i in start_idx)
