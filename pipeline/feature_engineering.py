@@ -164,6 +164,7 @@ def load_history(engine):
         SELECT ph.player_id,
                p.web_name,
                p.element_type,
+               p.position_label  AS position,
                p.team,
                p.now_cost,
                p.selected_by_percent,
@@ -189,9 +190,12 @@ def load_history(engine):
         ORDER BY ph.player_id, ph.round
     """, engine)
 
+    
     archive = pd.read_sql("""
-        SELECT player_id,
+        SELECT element           AS player_id,
                name              AS web_name,
+               position,
+               team              AS team_name,
                NULL::integer     AS element_type,
                NULL::integer     AS team,
                NULL::integer     AS now_cost,
@@ -214,7 +218,8 @@ def load_history(engine):
                value             AS price_raw,
                season
         FROM player_history_archive
-        ORDER BY player_id, season, round
+        WHERE season != '2025-26'
+        ORDER BY element, season, round
     """, engine)
 
     df = pd.concat([archive, current], ignore_index=True)
@@ -333,7 +338,9 @@ def compute_rolling_features(df):
                 "season"                : str(season),
                 "gameweek"              : int(row["gameweek"]),
                 "web_name"              : str(row.get("web_name", "") or ""),
-                "position"              : _element_type_to_pos(row.get("element_type")),
+                "position" : (row.get("position") 
+                             if row.get("position") not in (None, "", "UNK", "AM") 
+                             else _element_type_to_pos(row.get("element_type"))),
                 "team_id"               : _safe_int(row.get("team")),
                 "price"                 : _safe_float(float(row.get("price_raw", 0) or 0) / 10),
                 "actual_points"         : int(row["total_points"]),
@@ -387,6 +394,10 @@ def compute_rolling_features(df):
 def _element_type_to_pos(element_type):
     """Converts FPL element_type integer to position label."""
     mapping = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+    # Also handle string positions from archive
+    if isinstance(element_type, str):
+        return {"AM": "MID", "GK": "GK", "DEF": "DEF", 
+                "MID": "MID", "FWD": "FWD"}.get(element_type, "UNK")
     try:
         return mapping.get(int(element_type), "UNK")
     except (TypeError, ValueError):

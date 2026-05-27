@@ -1,75 +1,62 @@
 """
-prediction/captain_model.py  —  Phase 8a: Captain Classifier
-=============================================================
+prediction/captain_model.py  —  Phase 8d: Captain Classifier v2
+================================================================
 
-CONCEPTS TO UNDERSTAND BEFORE READING THIS SCRIPT
---------------------------------------------------
+WHAT THIS MODEL DOES
+--------------------
+Predicts which player is most likely to be the top scorer in a
+given gameweek. Used to select the captain in team_selector.py.
 
-1. Why a separate captain model?
-   The main XGBoost model in predict_points.py predicts AVERAGE points.
-   It learns "this player typically scores X points per gameweek".
-   Captaincy requires predicting CEILING — "this player is likely to
-   have a big gameweek THIS week specifically".
+WHY A SEPARATE CAPTAIN MODEL?
+------------------------------
+The main XGBoost model in predict_points.py predicts AVERAGE points.
+Captaincy requires predicting CEILING — who is likely to score BIG
+this specific week, not who averages the most.
 
-   These are different problems. A player who consistently scores 5-6
-   pts is a great model pick but a poor captain choice. A player who
-   scores 2 or 15 depending on fixture is a great captain candidate
-   when they have an easy game.
+A player who scores [2, 2, 2, 2, 15] has avg=4.6.
+The main model sees a mediocre pick. We see ceiling=15.
 
-   Evidence from 2025-26:
-   - GW37: Thiago ranked #1 by avg pts (6.07 adj), scored 2
-   - GW37: Watkins ranked #6 by avg pts (4.07 adj), scored 15
-   - Main model correctly had Watkins in the team but didn't captain him
-   - Captain accuracy using avg pts: 19% (5/26 GWs correct)
+FEATURE DESIGN PHILOSOPHY
+--------------------------
+Based on feature discrimination analysis against historical top scorers:
 
-2. What the captain classifier predicts
-   Binary target: "was this player the top scorer in their gameweek?"
-   We train on historical data where we know who actually topped the
-   scoring each week. The model learns which features predict ceiling
-   performance specifically — not average performance.
+  STRONGEST signals (top scorers vs non-top, ratio):
+    avg_points_10gw      3.48x  — sustained form is predictive
+    xgi_season           3.72x  — underlying attacking quality
+    selected_by_percent  4.40x  — popular players score big more often
 
-   For each player-gameweek in training:
-     label = 1 if total_points == max(total_points) for that GW
-     label = 0 otherwise
+  MODERATE signals:
+    max_points_5gw       1.47x  — actual ceiling in recent history
+    last_3gw_top10_rate  1.92x  — hot streak signal
+    price                ~2x    — premium players captain more reliably
 
-   Probability output: captain_score = P(player is top scorer this GW)
+  NOISE signals (removed):
+    differential_score  15.67x  — dominated by fringe low-ownership
+                                   players who occasionally explode,
+                                   causes model to recommend non-starters
 
-3. Captain-specific features
-   We add features the main model doesn't emphasise:
-   - is_home: home players outscore away ~60% of weeks
-   - opp_xga_rank: percentile rank of opponent defence weakness
-     (easier to score big vs weak defences)
-   - avg_ceiling_5gw: average of top-2 scores in last 5 GWs
-     (measures how high a player can go, not just average)
-   - last_3gw_was_top5: was player in top 5 scorers recently?
-     (hot streaks are real in FPL)
-   - is_premium: price > £9m (premium players captain more reliably)
-   - is_attacking: position FWD or MID (attacking players have
-     higher ceilings than defenders for captaincy)
-   - pts_variance_5gw: standard deviation of last 5 scores
-     (high variance = boom or bust = captaincy candidate)
-   - xgi_per90_season: underlying goal involvement rate
-     (players with high xGI have more ceiling potential)
+OWNERSHIP TIERS (new in this version)
+--------------------------------------
+Instead of a compound differential_score that creates infinite values
+for zero-ownership players, we use categorical ownership tiers:
 
-4. Why XGBoost again (not logistic regression)
-   The captain signal is non-linear and position-specific. A home
-   FWD with high xGI vs a weak defence is exponentially better
-   than any single factor alone. XGBoost captures these interaction
-   effects automatically. We use it as a classifier (predict_proba)
-   rather than regressor.
+  is_high_ownership    selected_by_percent > 30%  — template captain
+  is_medium_ownership  10-30%                      — semi-popular pick
+  is_low_ownership     < 10%                       — differential
 
-5. Integration with team_selector.py
-   After predict_points.py runs, captain_model.py adds captain_score
-   to the predictions table. team_selector.py then uses captain_score
-   (not adjusted_points) to select the captain. The LP objective
-   for starting XI optimisation still uses adjusted_points — only
-   the captain selection changes.
+This lets XGBoost learn the non-linear relationship between ownership
+and captaincy value without one signal dominating.
 
-6. Calibration target
-   Current accuracy: 19% (captain is the actual top scorer 1 in 5 weeks)
-   Target accuracy: 35%+ (captain is actual top scorer 1 in 3 weeks)
-   Top human managers achieve ~40% captain accuracy.
-   No model achieves >50% consistently — too much variance in FPL.
+ACCURACY CONTEXT
+----------------
+Top-1 accuracy: picking the exact top scorer is very hard.
+Even the best human FPL managers achieve ~25-30% top-1.
+A random pick from 15 starters = 6.7%.
+Our target: 10%+ top-1, 25%+ top-3.
+
+The classifier is most useful for RANKING candidates —
+distinguishing B.Fernandes from Calvert-Lewin for captaincy
+is more valuable than predicting the exact top scorer.
 """
 
 import os
@@ -82,11 +69,7 @@ from sqlalchemy import create_engine, text
 
 try:
     import xgboost as xgb
-    from sklearn.metrics import (
-        accuracy_score, roc_auc_score,
-        precision_score, recall_score
-    )
-    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.metrics import roc_auc_score
 except ImportError:
     raise ImportError("Run: pip install xgboost scikit-learn")
 
@@ -95,43 +78,49 @@ except ImportError:
 # CONFIGURATION
 # =============================================================================
 
-DB_PATH           = "db/fpl.db"
+DB_PATH            = "db/fpl.db"
 CAPTAIN_MODEL_PATH = Path("models/xgb_captain_classifier.pkl")
+TRAIN_SEASONS      = ["2022-23", "2023-24", "2024-25"]
 
-TRAIN_SEASONS = ["2022-23", "2023-24", "2024-25"]
-
-# Features used by the captain classifier
-# Subset of main model features + captain-specific additions
 CAPTAIN_FEATURES = [
-    # Form features — same as main model
+    # === CEILING FEATURES — actual max scores from history ===
+    "max_points_5gw",          # Max score in last 5 GWs (real ceiling)
+    "max_points_3gw",          # Max score in last 3 GWs (more recent)
+    "last_3gw_top10_rate",     # Fraction of last 3 GWs in top 10 scorers
+
+    # === OWNERSHIP TIERS — replaces compound differential_score ===
+    "is_high_ownership",       # > 30% selected — template captain candidate
+    "is_medium_ownership",     # 10-30% selected — popular pick
+    "is_low_ownership",        # < 10% selected — differential
+    "selected_by_percent",     # Raw ownership for fine-grained signal
+
+    # === FORM — strongest historical signal ===
+    "avg_points_5gw",
     "avg_points_10gw",
     "avg_points_season",
 
-    # Captain-specific form features
-    "pts_variance_5gw",      # std dev of last 5 scores (boom/bust indicator)
-
-    # Underlying quality
+    # === UNDERLYING QUALITY ===
     "xgi_season",
     "xgi_per90_season",
     "avg_goals_5gw",
     "avg_assists_5gw",
     "avg_ict_5gw",
 
-    # Fixture features — critical for captaincy
+    # === FIXTURE ===
     "fixture_fdr",
-    "opponent_xga_5",        # weaker defence = higher ceiling
-    "opp_xga_rank",          # percentile rank (0=hardest, 1=easiest)
-    "was_home",              # home advantage
+    "opponent_xga_5",
+    "opp_xga_rank",
+    "was_home",
 
-    # Availability
+    # === AVAILABILITY ===
     "lineup_probability",
 
-    # Position/price (captain bias)
-    "is_attacking",          # FWD or MID (1=yes)
-    "is_premium",            # price > £9m (1=yes)
+    # === POSITION / PRICE ===
+    "is_attacking",
+    "is_premium",
     "price",
 
-    # Position one-hot
+    # === POSITION ONE-HOT ===
     "pos_GK",
     "pos_DEF",
     "pos_MID",
@@ -151,81 +140,175 @@ def get_engine():
 
 
 # =============================================================================
-# DATA PREPARATION
+# CEILING FEATURES FROM PLAYER_HISTORY
+# =============================================================================
+
+def compute_ceiling_features(engine):
+    """
+    Computes real ceiling features from player_history.
+
+    Returns DataFrame with:
+      max_points_5gw      — actual max score in last 5 GWs
+      max_points_3gw      — actual max score in last 3 GWs
+      last_3gw_top10_rate — fraction of last 3 GWs where player
+                            ranked in global top 10 scorers
+
+    Uses shift(1) — only past gameweeks, no data leakage.
+    Only uses player_history (current season) joined to model_features
+    for season context.
+    """
+    print("  Computing ceiling features from player_history...")
+
+    ph = pd.read_sql("""
+        SELECT ph.player_id,
+               ph.round     AS gameweek,
+               ph.total_points,
+               mf.season
+        FROM player_history ph
+        JOIN (
+            SELECT DISTINCT player_id, gameweek, season
+            FROM model_features
+        ) mf ON ph.player_id = mf.player_id
+             AND ph.round     = mf.gameweek
+        ORDER BY ph.player_id, mf.season, ph.round
+    """, engine)
+
+    if ph.empty:
+        print("  ⚠ No player_history data found")
+        return pd.DataFrame()
+
+    print(f"  ✓ {len(ph):,} player-gameweek rows loaded")
+
+    ph = ph.sort_values(["player_id", "season", "gameweek"]).reset_index(drop=True)
+
+    # Global rank per GW for top10 signal
+    ph["gw_rank"] = ph.groupby(["season", "gameweek"])["total_points"].rank(
+        ascending=False, method="min"
+    )
+    ph["is_top10"] = (ph["gw_rank"] <= 10).astype(float)
+
+    # Rolling per player — shift(1) prevents leakage
+    rows = []
+    for (pid, season), grp in ph.groupby(["player_id", "season"]):
+        grp  = grp.sort_values("gameweek").reset_index(drop=True)
+        pts  = grp["total_points"]
+        t10  = grp["is_top10"]
+
+        for i in range(len(grp)):
+            past5 = pts.iloc[max(0, i-5):i]
+            past3 = pts.iloc[max(0, i-3):i]
+            t10_3 = t10.iloc[max(0, i-3):i]
+            rows.append({
+                "player_id"          : pid,
+                "season"             : season,
+                "gameweek"           : int(grp.loc[i, "gameweek"]),
+                "max_points_5gw"     : float(past5.max()) if len(past5) > 0 else 0.0,
+                "max_points_3gw"     : float(past3.max()) if len(past3) > 0 else 0.0,
+                "last_3gw_top10_rate": float(t10_3.mean()) if len(t10_3) > 0 else 0.0,
+            })
+
+    ceiling_df = pd.DataFrame(rows)
+    print(f"  ✓ Ceiling features computed for {len(ceiling_df):,} rows")
+    return ceiling_df
+
+
+# =============================================================================
+# FEATURE ENGINEERING
 # =============================================================================
 
 def load_training_data(engine):
-    """
-    Loads model_features joined with actual points from player_history.
-    Computes captain-specific features not in model_features.
-    """
+    """Loads model_features for all seasons with actual_points."""
     print("  Loading captain training data...")
-
     df = pd.read_sql("""
-        SELECT mf.*,
-               ph.total_points AS actual_points_ph,
-               ph.was_home     AS was_home_ph
+        SELECT mf.*
         FROM model_features mf
-        LEFT JOIN player_history ph
-            ON mf.player_id = ph.player_id
-           AND mf.gameweek  = ph.round
         WHERE mf.actual_points IS NOT NULL
         ORDER BY mf.season, mf.gameweek, mf.player_id
     """, engine)
-
-    print(f"  ✓ {len(df):,} rows loaded")
+    print(f"  ✓ {len(df):,} rows loaded from model_features")
     return df
 
 
-def engineer_captain_features(df):
+def engineer_captain_features(df, ceiling_df=None):
     """
-    Adds captain-specific features to the dataframe.
-    These are not in model_features — computed here.
+    Adds all captain-specific features to the dataframe.
+    Safe to call on both training data and prediction data.
     """
     df = df.copy()
 
-    # Position one-hot
+    # -------------------------------------------------------------------------
+    # Merge real ceiling features
+    # -------------------------------------------------------------------------
+    if ceiling_df is not None and not ceiling_df.empty:
+        df = df.merge(
+            ceiling_df[["player_id", "season", "gameweek",
+                        "max_points_5gw", "max_points_3gw",
+                        "last_3gw_top10_rate"]],
+            on=["player_id", "season", "gameweek"],
+            how="left"
+        )
+        fallback_n = df["max_points_5gw"].isna().sum()
+        if fallback_n > 0:
+            avg = pd.to_numeric(df["avg_points_5gw"], errors="coerce").fillna(0)
+            df["max_points_5gw"]      = df["max_points_5gw"].fillna(avg * 1.2)
+            df["max_points_3gw"]      = df["max_points_3gw"].fillna(avg * 1.2)
+            df["last_3gw_top10_rate"] = df["last_3gw_top10_rate"].fillna(0)
+        print(f"  ✓ Ceiling features merged ({fallback_n:,} rows used fallback)")
+    else:
+        avg = pd.to_numeric(df.get("avg_points_5gw", 0), errors="coerce").fillna(0)
+        df["max_points_5gw"]      = avg * 1.2
+        df["max_points_3gw"]      = avg * 1.2
+        df["last_3gw_top10_rate"] = 0.0
+
+    # -------------------------------------------------------------------------
+    # Ownership tiers — categorical, avoids compound ratio problems
+    # -------------------------------------------------------------------------
+    own = pd.to_numeric(
+        df.get("selected_by_percent", pd.Series(5.0, index=df.index)),
+        errors="coerce"
+    ).fillna(5.0)
+
+    df["selected_by_percent"] = own
+    df["is_high_ownership"]   = (own > 30).astype(float)
+    df["is_medium_ownership"] = ((own >= 10) & (own <= 30)).astype(float)
+    df["is_low_ownership"]    = (own < 10).astype(float)
+
+    # -------------------------------------------------------------------------
+    # Position features
+    # -------------------------------------------------------------------------
     for pos in ["GK", "DEF", "MID", "FWD"]:
         df[f"pos_{pos}"] = (df["position"] == pos).astype(float)
 
-    # is_attacking — FWD or MID (these positions have captaincy value)
     df["is_attacking"] = df["position"].isin(["FWD", "MID"]).astype(float)
+    df["is_premium"]   = (
+        pd.to_numeric(df["price"], errors="coerce") > 9.0
+    ).astype(float)
 
-    # is_premium — price > £9m
-    df["is_premium"] = (pd.to_numeric(df["price"], errors="coerce") > 9.0).astype(float)
-
-    # was_home — use from player_history if available, else model_features
+    # -------------------------------------------------------------------------
+    # Home advantage
+    # -------------------------------------------------------------------------
     if "was_home" in df.columns:
         df["was_home"] = pd.to_numeric(df["was_home"], errors="coerce").fillna(0.5)
     else:
         df["was_home"] = 0.5
 
-    # Real ceiling: max points scored in last 5 GWs
-    # Since we don't have this directly, use avg + variance as proxy
-    avg_pts = pd.to_numeric(df["avg_points_5gw"], errors="coerce").fillna(0)
-    variance = pd.to_numeric(df.get("pts_variance_5gw", pd.Series(0, index=df.index)),
-                          errors="coerce").fillna(0)
-    df["avg_ceiling_5gw"] = (avg_pts + variance).clip(lower=avg_pts)
-
-    # pts_variance_5gw: proxy using difference between season avg and 5gw avg
-    df["pts_variance_5gw"] = (
-        (pd.to_numeric(df["avg_points_5gw"], errors="coerce").fillna(0) -
-         pd.to_numeric(df["avg_points_season"], errors="coerce").fillna(0)).abs()
-    )
-
-    # opp_xga_rank: percentile rank of opponent xGA within each GW
-    # Higher rank = weaker defence = easier to score big
-    opp_xga = pd.to_numeric(df["opponent_xga_5"], errors="coerce").fillna(
-        df["opponent_xga_5"].median() if df["opponent_xga_5"].notna().any() else 1.5
+    # -------------------------------------------------------------------------
+    # Fixture quality rank
+    # -------------------------------------------------------------------------
+    opp_xga = pd.to_numeric(
+        df.get("opponent_xga_5", pd.Series(1.5, index=df.index)),
+        errors="coerce"
     )
     df["opp_xga_rank"] = opp_xga.rank(pct=True).fillna(0.5)
 
-    # Fill remaining missing values
+    # -------------------------------------------------------------------------
+    # Fill all missing values with column medians
+    # -------------------------------------------------------------------------
     for col in CAPTAIN_FEATURES:
         if col in df.columns:
             median = df[col].median()
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(
-                median if not pd.isna(median) else 0
+                median if pd.notna(median) else 0.0
             )
         else:
             df[col] = 0.0
@@ -235,37 +318,22 @@ def engineer_captain_features(df):
 
 def build_captain_labels(df):
     """
-    Creates binary captain label for each player-gameweek.
-    label = 1 if player had the highest actual_points in their GW
-    label = 0 otherwise
-
-    Ties are broken by giving label=1 to all tied top scorers.
+    Binary label: 1 if player was the top scorer in their GW, else 0.
+    Ties: all tied top scorers get label=1.
+    Players with 0 actual_points: label=0.
     """
-    df = df.copy()
+    df    = df.copy()
+    pts   = pd.to_numeric(df["actual_points"], errors="coerce").fillna(0)
+    df["_pts"] = pts
 
-    # Use actual_points from model_features (already joined)
-    pts_col = "actual_points"
-    if pts_col not in df.columns or df[pts_col].isna().all():
-        pts_col = "actual_points_ph"
-
-    df["_pts"] = pd.to_numeric(df[pts_col], errors="coerce").fillna(0)
-
-    # Max points per season+gameweek
     gw_max = df.groupby(["season", "gameweek"])["_pts"].transform("max")
+    df["captain_label"] = ((pts == gw_max) & (pts > 0)).astype(int)
 
-    # Label = 1 if player is the top scorer (or tied for top)
-    # Only label players who actually played (> 0 points)
-    df["captain_label"] = (
-        (df["_pts"] == gw_max) &
-        (df["_pts"] > 0)
-    ).astype(int)
-
-    # Stats
-    total_labels = df["captain_label"].sum()
-    total_gws    = df.groupby(["season", "gameweek"]).ngroups
-    print(f"  ✓ Captain labels built: {total_labels:,} top scorers across {total_gws:,} GWs")
-    print(f"    Positive rate: {df['captain_label'].mean():.2%}")
-
+    n_labels  = df["captain_label"].sum()
+    n_gws     = df.groupby(["season", "gameweek"]).ngroups
+    pos_rate  = df["captain_label"].mean()
+    print(f"  ✓ Captain labels: {n_labels:,} top scorers across {n_gws:,} GWs")
+    print(f"    Positive rate  : {pos_rate:.2%}")
     return df
 
 
@@ -275,47 +343,37 @@ def build_captain_labels(df):
 
 def train_captain_classifier(df):
     """
-    Trains XGBoost classifier to predict which player will be
-    the top scorer in their gameweek.
-
-    Uses class weights to handle imbalance (only ~1-3 top scorers
-    per GW vs 800+ non-top-scorers).
+    Trains XGBoost binary classifier.
+    Class imbalance handled via scale_pos_weight.
     """
     train_df = df[df["season"].isin(TRAIN_SEASONS)].copy()
     val_df   = df[~df["season"].isin(TRAIN_SEASONS)].copy()
-
-    print(f"  Train: {len(train_df):,} rows, "
-          f"{train_df['captain_label'].sum():,} positives "
-          f"({train_df['captain_label'].mean():.2%})")
-    print(f"  Val  : {len(val_df):,} rows, "
-          f"{val_df['captain_label'].sum():,} positives "
-          f"({val_df['captain_label'].mean():.2%})")
 
     X_train = train_df[CAPTAIN_FEATURES].values
     y_train = train_df["captain_label"].values
     X_val   = val_df[CAPTAIN_FEATURES].values
     y_val   = val_df["captain_label"].values
 
-    # Class weight to handle severe imbalance
-    # Roughly 1 top scorer per 838 players = ratio ~838:1
-    pos_count = y_train.sum()
-    neg_count = len(y_train) - pos_count
-    scale_pos_weight = neg_count / max(pos_count, 1)
+    pos          = max(int(y_train.sum()), 1)
+    neg          = len(y_train) - pos
+    spw          = neg / pos
 
-    print(f"  scale_pos_weight: {scale_pos_weight:.1f}")
+    print(f"  Train: {len(train_df):,} rows, {pos:,} positives")
+    print(f"  Val  : {len(val_df):,} rows, {int(y_val.sum()):,} positives")
+    print(f"  scale_pos_weight: {spw:.1f}")
 
     model = xgb.XGBClassifier(
-        n_estimators=500,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        min_child_weight=10,
-        scale_pos_weight=scale_pos_weight,
-        random_state=42,
-        n_jobs=-1,
-        eval_metric="auc",
-        early_stopping_rounds=30,
+        n_estimators       = 500,
+        max_depth          = 4,
+        learning_rate      = 0.03,
+        subsample          = 0.8,
+        colsample_bytree   = 0.7,
+        min_child_weight   = 10,
+        scale_pos_weight   = spw,
+        random_state       = 42,
+        n_jobs             = -1,
+        eval_metric        = "auc",
+        early_stopping_rounds = 40,
     )
 
     model.fit(
@@ -334,84 +392,63 @@ def train_captain_classifier(df):
 
 def evaluate_captain_model(model, val_df, X_val, y_val):
     """
-    Evaluates captain classifier on validation set.
+    Evaluates captain classifier with top-1 and top-3 accuracy.
 
-    Key metric: Top-1 captain accuracy — does the player with the
-    highest captain_score actually score the most points that GW?
-    This is the FPL-relevant metric.
+    Top-1: did our #1 ranked player score the most points that GW?
+    Top-3: was our #1 ranked player in the top 3 scorers that GW?
+
+    Top-3 is the FPL-relevant metric — a player who scores 15
+    when the top scorer scored 16 is still a great captain.
     """
-    print("\n  Evaluating captain classifier...")
+    print("\n  Evaluating captain classifier v2...")
 
-    # Probability predictions
-    probs = model.predict_proba(X_val)[:, 1]
+    probs  = model.predict_proba(X_val)[:, 1]
     val_df = val_df.copy()
     val_df["captain_score"] = probs
-    # Ensure _pts column exists for top-3 evaluation
-    if "_pts" not in val_df.columns:
-        pts_col = "actual_points" if "actual_points" in val_df.columns else "actual_points_ph"
-        val_df["_pts"] = pd.to_numeric(val_df.get(pts_col, 0), errors="coerce").fillna(0)
+    val_df["_pts"] = pd.to_numeric(
+        val_df["actual_points"], errors="coerce"
+    ).fillna(0)
 
-    # AUC — overall discrimination ability
     try:
         auc = roc_auc_score(y_val, probs)
         print(f"  AUC-ROC          : {auc:.3f}")
     except Exception:
-        print("  AUC-ROC          : N/A (single class in val)")
+        print("  AUC-ROC          : N/A")
 
-    # Top-1 captain accuracy per GW
-    # For each GW: was the player with highest captain_score the actual top scorer?
-    correct = 0
-    total   = 0
-    gw_results = []
+    top1_correct = top3_correct = total = 0
 
     for (season, gw), gw_df in val_df.groupby(["season", "gameweek"]):
-        if len(gw_df) < 50:
-            continue
-        if gw_df["captain_label"].sum() == 0:
+        if len(gw_df) < 50 or gw_df["captain_label"].sum() == 0:
             continue
 
-        # Player with highest captain_score
-        best_idx     = gw_df["captain_score"].idxmax()
-        best_player  = gw_df.loc[best_idx]
+        best_idx = gw_df["captain_score"].idxmax()
+        best_pts = float(gw_df.loc[best_idx, "_pts"])
+        gw_max   = gw_df["_pts"].max()
+        top3_min = gw_df["_pts"].nlargest(3).min()
 
-        # Was it actually the top scorer?
-        # Top-3 accuracy: is our recommended captain in the top 3 scorers?
-        gw_pts = gw_df["_pts"] if "_pts" in gw_df.columns else gw_df.get("actual_points", pd.Series())
-        if hasattr(gw_pts, 'nlargest'):
-            top3_threshold = gw_pts.nlargest(3).min()
-            best_pts = float(gw_df.loc[best_idx, "_pts"] if "_pts" in gw_df.columns else 0)
-            was_correct = best_pts >= top3_threshold and best_pts > 0
-        else:
-            was_correct = bool(best_player["captain_label"] == 1)
-        correct    += int(was_correct)
-        total      += 1
+        top1_correct += int(best_pts == gw_max and best_pts > 0)
+        top3_correct += int(best_pts >= top3_min and best_pts > 0)
+        total        += 1
 
-        gw_results.append({
-            "season"       : season,
-            "gameweek"     : gw,
-            "recommended"  : str(best_player.get("web_name", "?")),
-            "cap_score"    : float(best_player["captain_score"]),
-            "was_correct"  : was_correct,
-        })
+    top1 = top1_correct / total if total > 0 else 0
+    top3 = top3_correct / total if total > 0 else 0
 
-    accuracy = correct / total if total > 0 else 0
-    print(f"  Captain accuracy : {accuracy:.1%} ({correct}/{total} GWs correct)")
-    print(f"  Baseline (random): ~{1/15:.1%} (1 in 15 starters)")
-    print(f"  Previous (avg pts): 19.0% (5/26 GWs)")
+    print(f"  Top-1 accuracy   : {top1:.1%} ({top1_correct}/{total} GWs)")
+    print(f"  Top-3 accuracy   : {top3:.1%} ({top3_correct}/{total} GWs)")
+    print(f"  Baseline top-1   : ~6.7%  (random 1 of 15)")
+    print(f"  Baseline top-3   : ~20.0% (random 3 of 15)")
 
     # Feature importance
     print(f"\n  Top 10 captain features:")
-    importance = pd.Series(
-        model.feature_importances_,
-        index=CAPTAIN_FEATURES
+    imp = pd.Series(
+        model.feature_importances_, index=CAPTAIN_FEATURES
     ).sort_values(ascending=False)
+    bar_max = imp.iloc[0]
+    for feat, val in imp.head(10).items():
+        bar = "█" * int(val / bar_max * 40)
+        print(f"    {feat:<35} {val:.4f} {bar}")
 
-    bar_max = importance.iloc[0]
-    for feat, imp in importance.head(10).items():
-        bar = "█" * int(imp / bar_max * 40)
-        print(f"    {feat:<35} {imp:.4f} {bar}")
-
-    return accuracy, gw_results
+    return top1, top3
 
 
 # =============================================================================
@@ -420,62 +457,61 @@ def evaluate_captain_model(model, val_df, X_val, y_val):
 
 def score_predictions(model, engine):
     """
-    Applies the captain classifier to the current predictions table.
-    Loads features from model_features (has all columns needed)
-    then updates the predictions table with captain_score.
+    Applies captain classifier to current predictions table.
+    Loads features from model_features (has all required columns).
+    Updates predictions table with captain_score and captain_rank.
     """
-    print("\n  Scoring predictions with captain classifier...")
+    print("\n  Scoring predictions with captain classifier v2...")
 
-    # Load from model_features — has all required columns
     preds = pd.read_sql("""
-        SELECT mf.*, p.web_name, p.price AS price_override
+        SELECT mf.*,
+               p.web_name,
+               p.price          AS price_override,
+               p.adjusted_points
         FROM model_features mf
         JOIN predictions p ON mf.player_id = p.player_id
         WHERE mf.season = '2025-26'
           AND mf.gameweek = (
-              SELECT MAX(gameweek) FROM model_features
+              SELECT MAX(gameweek)
+              FROM model_features
               WHERE season = '2025-26'
           )
     """, engine)
 
     if preds.empty:
-        print("  ✗ No data found")
+        print("  ✗ No prediction data found")
         return
 
-    # Use price from predictions (more current)
+    # Use price from predictions table (more current)
     if "price_override" in preds.columns:
         preds["price"] = preds["price_override"]
 
-    preds = engineer_captain_features(preds)
+    ceiling_df = compute_ceiling_features(engine)
+    preds      = engineer_captain_features(preds, ceiling_df)
 
-    X = preds[CAPTAIN_FEATURES].values
-    captain_scores = model.predict_proba(X)[:, 1]
-
-    preds["captain_score"] = captain_scores.round(4)
+    scores = model.predict_proba(preds[CAPTAIN_FEATURES].values)[:, 1]
+    preds["captain_score"] = scores.round(4)
     preds["captain_rank"]  = preds["captain_score"].rank(
         ascending=False, method="min"
     ).astype(int)
 
-    # Add columns separately — each in its own transaction
-    for col, coltype in [
-        ("captain_score", "NUMERIC(5,4)"),
-        ("captain_rank",  "INTEGER")
-    ]:
+    # Add columns if needed — separate transactions to avoid abort
+    for col, coltype in [("captain_score", "NUMERIC(5,4)"),
+                         ("captain_rank",  "INTEGER")]:
         try:
             with engine.begin() as conn:
                 conn.execute(text(
                     f"ALTER TABLE predictions ADD COLUMN {col} {coltype}"
                 ))
         except Exception:
-            pass  # Column already exists — fine
+            pass  # Column already exists
 
-    # Update scores in a fresh transaction
+    # Update scores
     with engine.begin() as conn:
         for _, row in preds.iterrows():
             conn.execute(text("""
                 UPDATE predictions
-                SET captain_score = :cs,
-                    captain_rank  = :cr
+                SET captain_score = :cs, captain_rank = :cr
                 WHERE player_id = :pid
             """), {
                 "cs" : float(row["captain_score"]),
@@ -483,56 +519,62 @@ def score_predictions(model, engine):
                 "pid": int(row["player_id"]),
             })
 
-   # Only show columns that exist
-    show_cols = [c for c in [
-        "web_name", "position", "team_name",
-        "adjusted_points", "captain_score", "captain_rank",
-        "fixture_fdr", "opponent_name"
-    ] if c in preds.columns]
-    top_caps = preds.nsmallest(10, "captain_rank")[show_cols].copy()
+    # Display top 10
+    show = [c for c in ["web_name", "position", "adjusted_points",
+                         "max_points_5gw", "selected_by_percent",
+                         "captain_score", "captain_rank",
+                         "fixture_fdr", "opponent_name"]
+            if c in preds.columns]
+    top10 = preds.nsmallest(10, "captain_rank")[show].copy()
 
-    print(f"\n  Top 10 captain recommendations:")
+    print(f"\n  Top 10 captain recommendations (v2):")
     print(f"  {'#':<3} {'Player':<22} {'Pos':<4} {'AdjPts':>7} "
-          f"{'CapScore':>9} {'FDR':>4} Opponent")
-    print(f"  {'-'*70}")
-    for _, r in top_caps.iterrows():
-        name = str(r["web_name"]) if isinstance(r["web_name"], str) else str(r["web_name"].iloc[0]) if hasattr(r["web_name"], "iloc") else str(r["web_name"])
+          f"{'MaxPts5':>8} {'Own%':>5} {'CapScore':>9} {'FDR':>4} Opponent")
+    print(f"  {'-'*80}")
+    for _, r in top10.iterrows():
+        wn = r.get("web_name", "")
+        name = str(wn) if isinstance(wn, str) else (
+            str(wn.iloc[0]) if hasattr(wn, "iloc") else str(wn)
+        )
         print(
             f"  {int(r['captain_rank']):<3} {name:<22} "
-            f"{str(r['position']):<4} "
+            f"{str(r.get('position','')):<4} "
             f"{float(r.get('adjusted_points', 0) or 0):>7.2f} "
+            f"{float(r.get('max_points_5gw', 0) or 0):>8.1f} "
+            f"{float(r.get('selected_by_percent', 0) or 0):>5.1f}% "
             f"{float(r['captain_score'] or 0):>9.4f} "
-            f"{float(r['fixture_fdr'] or 0):>4.1f} "
-            f"{str(r.get('opponent_name','') or '')}"
+            f"{float(r.get('fixture_fdr', 0) or 0):>4.1f} "
+            f"{str(r.get('opponent_name', '') or '')}"
         )
 
-    print(f"\n  ✓ captain_score added to {len(preds):,} predictions")
+    print(f"\n  ✓ captain_score v2 added to {len(preds):,} predictions")
     return preds
+
 
 # =============================================================================
 # MODEL PERSISTENCE
 # =============================================================================
 
-def save_captain_model(model, accuracy, features):
-    """Saves the captain classifier and metadata."""
+def save_captain_model(model, top1, top3, features):
     CAPTAIN_MODEL_PATH.parent.mkdir(exist_ok=True)
     with open(CAPTAIN_MODEL_PATH, "wb") as f:
         pickle.dump({
-            "model"    : model,
-            "features" : features,
-            "accuracy" : accuracy,
-            "trained_at": datetime.now().isoformat(),
+            "model"      : model,
+            "features"   : features,
+            "top1_acc"   : top1,
+            "top3_acc"   : top3,
+            "version"    : "v2",
+            "trained_at" : datetime.now().isoformat(),
         }, f)
-    print(f"  ✓ Captain model saved to {CAPTAIN_MODEL_PATH}")
+    print(f"  ✓ Captain model v2 saved to {CAPTAIN_MODEL_PATH}")
 
 
 def load_captain_model():
-    """Loads the saved captain classifier."""
     if not CAPTAIN_MODEL_PATH.exists():
         return None, None
     with open(CAPTAIN_MODEL_PATH, "rb") as f:
         data = pickle.load(f)
-    return data["model"], data.get("accuracy")
+    return data["model"], data.get("top1_acc", data.get("accuracy"))
 
 
 # =============================================================================
@@ -541,51 +583,55 @@ def load_captain_model():
 
 def run_captain_model():
     """
-    Full captain classifier pipeline:
+    Full pipeline:
     1. Load model_features from DB
-    2. Engineer captain-specific features
-    3. Build captain labels (who was top scorer each GW?)
-    4. Train XGBoost classifier
-    5. Evaluate on 2025-26 validation set
-    6. Score current predictions table
-    7. Save model
+    2. Compute real ceiling features from player_history
+    3. Engineer all captain features
+    4. Build labels — who was top scorer each GW?
+    5. Train XGBoost classifier
+    6. Evaluate top-1 and top-3 accuracy
+    7. Score current predictions table
+    8. Save model
     """
-    start = datetime.now()
-
-    print("=" * 60)
-    print(f"Captain Classifier  |  {start.strftime('%Y-%m-%d %H:%M')}")
-    print("=" * 60)
-
+    start  = datetime.now()
     engine = get_engine()
 
-    print("\n[1/5] Loading training data...")
+    print("=" * 60)
+    print(f"Captain Classifier v2  |  {start.strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+
+    print("\n[1/6] Loading training data...")
     df = load_training_data(engine)
 
-    print("\n[2/5] Engineering captain features...")
-    df = engineer_captain_features(df)
+    print("\n[2/6] Computing ceiling features...")
+    ceiling_df = compute_ceiling_features(engine)
 
-    print("\n[3/5] Building captain labels...")
+    print("\n[3/6] Engineering captain features...")
+    df = engineer_captain_features(df, ceiling_df)
+
+    print("\n[4/6] Building captain labels...")
     df = build_captain_labels(df)
 
-    print("\n[4/5] Training captain classifier...")
+    print("\n[5/6] Training...")
     model, val_df, X_val, y_val = train_captain_classifier(df)
 
-    print("\n[5/5] Evaluating...")
-    accuracy, gw_results = evaluate_captain_model(model, val_df, X_val, y_val)
+    print("\n[6/6] Evaluating...")
+    top1, top3 = evaluate_captain_model(model, val_df, X_val, y_val)
 
-    print("\n[6/6] Scoring current predictions...")
+    print("\n[+] Scoring current predictions...")
     score_predictions(model, engine)
 
-    save_captain_model(model, accuracy, CAPTAIN_FEATURES)
+    save_captain_model(model, top1, top3, CAPTAIN_FEATURES)
 
     duration = (datetime.now() - start).total_seconds()
     print(f"\n{'='*60}")
-    print(f"  Captain accuracy : {accuracy:.1%}")
+    print(f"  Top-1 accuracy   : {top1:.1%}")
+    print(f"  Top-3 accuracy   : {top3:.1%}")
     print(f"  Model saved      : {CAPTAIN_MODEL_PATH}")
     print(f"  Duration         : {duration:.0f}s")
     print(f"{'='*60}")
 
-    return model, accuracy
+    return model, top1
 
 
 if __name__ == "__main__":

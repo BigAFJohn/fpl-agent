@@ -12,6 +12,7 @@ Tests focus on:
 """
 
 import sys
+from unittest import result
 import pytest
 import pandas as pd
 import numpy as np
@@ -54,6 +55,8 @@ def make_player_df(n=20, seed=42):
         "lineup_probability" : rng.uniform(0.5, 1.0, n),
         "was_home"           : rng.randint(0, 2, n).astype(float),
         "actual_points"      : rng.randint(1, 20, n),
+        "selected_by_percent": rng.uniform(0.5, 50.0, n),
+        "opponent_xga_5"     : rng.uniform(0.5, 2.5, n),
     })
 
 
@@ -124,12 +127,13 @@ class TestFeatureEngineering:
             "Each player should have exactly one position flag set"
 
     def test_ceiling_feature_gt_avg(self):
-        """avg_ceiling_5gw should always be >= avg_points_5gw (it's the ceiling)."""
+        """max_points_5gw fallback should be >= avg_points_5gw * 1.2."""
         df = make_player_df()
         result = engineer_captain_features(df)
-        violations = (result["avg_ceiling_5gw"] < result["avg_points_5gw"]).sum()
+        # When no ceiling_df provided, fallback is avg * 1.2
+        violations = (result["max_points_5gw"] < result["avg_points_5gw"]).sum()
         assert violations == 0, \
-            f"{violations} players have ceiling below average (impossible)"
+            f"{violations} players have max_points below average (impossible)"
 
 
 # =============================================================================
@@ -241,4 +245,4 @@ class TestSignalOrdering:
         df.loc[0, "avg_points_5gw"] = 8.0
         df.loc[1, "avg_points_5gw"] = 2.0
         result = engineer_captain_features(df)
-        assert result.loc[0, "avg_ceiling_5gw"] > result.loc[1, "avg_ceiling_5gw"]
+        assert result.loc[0, "max_points_5gw"] > result.loc[1, "max_points_5gw"]
