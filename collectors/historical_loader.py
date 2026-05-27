@@ -76,6 +76,8 @@ DB_PATH = "db/fpl.db"
 COLUMNS_WANTED = [
     "name",             # Player name (vaastav uses full name, not web_name)
     "element",          # FPL player ID — use this to join with players table
+    "position",         # Player position (GK/DEF/MID/FWD)
+    "team",             # Team name
     "fixture",
     "round",            # Gameweek number
     "opponent_team",
@@ -233,8 +235,8 @@ def deduplicate_archive(engine):
         # SQLite-compatible deduplication using rowid
         conn.execute(text("""
             DELETE FROM player_history_archive
-            WHERE rowid NOT IN (
-                SELECT MIN(rowid)
+            WHERE ctid NOT IN (
+                SELECT MIN(ctid)
                 FROM player_history_archive
                 GROUP BY element, round, season
             )
