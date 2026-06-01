@@ -189,7 +189,7 @@ def build_prompt(context):
             f"  {r['web_name']:<20} {r['position']:<4} £{float(r['price'] or 0):.1f} "
             f"adj={float(r['adjusted_points'] or 0):.2f} "
             f"linp={float(r['lineup_probability'] or 0):.2f} "
-            f"fdr={float(r['fixture_fdr'] or 0):.1f} "
+            f"fixture_fdr={float(r['fixture_fdr'] or 0):.1f}(opponent) "
             f"vs {r['opponent_name'] or ''}"
         )
     preds_text = "\n".join(preds_lines)
@@ -204,7 +204,7 @@ def build_prompt(context):
         team_lines.append(
             f"    {r['web_name']}{cap:<5} {r['position']} "
             f"£{float(r['price'] or 0):.1f} adj={float(r['adjusted_points'] or 0):.2f} "
-            f"vs {r['opponent_name'] or ''} FDR={float(r['fixture_fdr'] or 0):.1f}"
+            f"vs {r['opponent_name'] or ''} (opponent_fdr={float(r['fixture_fdr'] or 0):.1f})"
         )
     team_lines.append("  BENCH:")
     for r in bench:
