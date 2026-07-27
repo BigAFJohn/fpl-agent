@@ -246,7 +246,7 @@ def build_fixture_difficulty(engine):
                f.team_h_difficulty AS fpl_fdr_home,
                f.team_a_difficulty AS fpl_fdr_away,
                f.finished,
-               '2025-26'    AS season
+               '2026-27'    AS season
         FROM fixtures f
         JOIN teams ht ON f.team_h = ht.id
         JOIN teams at ON f.team_a = at.id
@@ -264,7 +264,7 @@ def build_fixture_difficulty(engine):
                xga_season_avg,
                defence_strength
         FROM team_defence_ratings
-        WHERE season = '2025-26'
+        WHERE season = (SELECT MAX(season) FROM team_defence_ratings)
           AND xga_rolling_5 IS NOT NULL
         ORDER BY team_name, gameweek DESC
     """, engine)
@@ -390,7 +390,7 @@ def verify_difficulty(engine):
                ROUND(xga_season_avg::numeric, 3) AS xga_season,
                ROUND(defence_strength::numeric, 3) AS strength
         FROM team_defence_ratings
-        WHERE season = '2025-26'
+        WHERE season = (SELECT MAX(season) FROM team_defence_ratings)
           AND xga_rolling_5 IS NOT NULL
         ORDER BY team_name, gameweek DESC
     """, engine)

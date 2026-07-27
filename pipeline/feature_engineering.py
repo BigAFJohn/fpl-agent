@@ -164,7 +164,7 @@ def load_history(engine):
         SELECT ph.player_id,
                p.web_name,
                p.element_type,
-               p.position_label  AS position,
+               CASE p.element_type WHEN 1 THEN 'GK' WHEN 2 THEN 'DEF' WHEN 3 THEN 'MID' WHEN 4 THEN 'FWD' ELSE 'UNK' END AS position,
                p.team,
                p.now_cost,
                p.selected_by_percent,
@@ -184,7 +184,7 @@ def load_history(engine):
                ph.ict_index,
                ph.saves,
                ph.value          AS price_raw,
-               '2025-26'         AS season
+               '2026-27'         AS season
         FROM player_history ph
         JOIN players p ON ph.player_id = p.id
         ORDER BY ph.player_id, ph.round
@@ -218,7 +218,7 @@ def load_history(engine):
                value             AS price_raw,
                season
         FROM player_history_archive
-        WHERE season != '2025-26'
+        WHERE season != '2026-27'
         ORDER BY element, season, round
     """, engine)
 
@@ -553,9 +553,9 @@ def verify_features(engine):
                avg_points_5gw, avg_points_10gw, points_trend,
                started_rate_5gw, xgi_season
         FROM player_features
-        WHERE season = '2025-26'
+        WHERE season = '2026-27'
           AND gameweek = (
-              SELECT MAX(gameweek) FROM player_features WHERE season = '2025-26'
+              SELECT MAX(gameweek) FROM player_features WHERE season = '2026-27'
           )
           AND avg_minutes_5gw > 60
         ORDER BY avg_points_5gw DESC

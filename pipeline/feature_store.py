@@ -149,7 +149,7 @@ def build_model_features(engine):
             ON pf.player_id = ph.player_id
            AND pf.gameweek  = ph.round
         LEFT JOIN teams t
-            ON pf.team_id = t.id
+            ON pf.team_id::bigint = t.id
         ORDER BY pf.player_id, pf.season, pf.gameweek
     """, engine)
     print(f"  ✓ player_features: {len(pf):,} rows")
@@ -201,8 +201,8 @@ def build_model_features(engine):
 
     # Latest GW in current season -- these are the prediction rows
     latest_gw = int(
-        pf[pf["season"] == "2025-26"]["gameweek"].max()
-    ) if not pf[pf["season"] == "2025-26"].empty else 0
+        pf[pf["season"] == "2026-27"]["gameweek"].max()
+    ) if not pf[pf["season"] == "2026-27"].empty else 0
 
     # Build lineup probability lookup
     lp_map = lp.set_index(["player_id", "gameweek"])
@@ -258,7 +258,7 @@ def build_model_features(engine):
         fpl_fdr  = None
         opp_name = None
 
-        if season == "2025-26" and team_name:
+        if season == "2026-27" and team_name:
             # KEY FIX: For prediction rows (latest completed GW), look up
             # the next UNPLAYED fixture rather than the completed one.
             # This ensures Thiago shows Crystal Palace (GW37) not Man City
@@ -397,12 +397,12 @@ def verify_model_features(engine):
                xgi_season,
                ROUND(
                    (avg_points_5gw * lineup_probability
-                    * (6.0 - COALESCE(fixture_fdr, 3.0)) / 5.0)::numeric
+                    * (6.0 - COALESCE(fixture_fdr::numeric, 3.0)) / 5.0)::numeric
                , 2) AS composite_score
         FROM model_features
-        WHERE season = '2025-26'
+        WHERE season = '2026-27'
           AND gameweek = (
-              SELECT MAX(gameweek) FROM model_features WHERE season = '2025-26'
+              SELECT MAX(gameweek) FROM model_features WHERE season = '2026-27'
           )
           AND avg_minutes_5gw > 45
           AND lineup_probability > 0.5

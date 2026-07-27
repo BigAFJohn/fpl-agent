@@ -181,12 +181,12 @@ def collect_all_absences(engine):
         conn.commit()
 
     archive_df = pd.read_sql("""
-        SELECT player_id,
+        SELECT element AS player_id,
                name AS web_name,
                round, minutes, season
         FROM player_history_archive
         WHERE minutes IS NOT NULL
-        ORDER BY player_id, season, round
+        ORDER BY element, season, round
     """, engine)
 
     current_df = pd.read_sql("""
@@ -242,10 +242,10 @@ def build_injury_profiles(engine):
     absences_df["weight"] = absences_df["season"].map(SEASON_WEIGHTS).fillna(0.5)
 
     games_df = pd.read_sql("""
-        SELECT player_id, season, COUNT(*) AS games_played
+        SELECT element AS player_id, season, COUNT(*) AS games_played
         FROM player_history_archive
         WHERE minutes > 0
-        GROUP BY player_id, season
+        GROUP BY element, season
         UNION ALL
         SELECT player_id, '2025-26', COUNT(*)
         FROM player_history
