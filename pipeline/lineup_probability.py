@@ -346,9 +346,9 @@ def compute_lineup_probabilities(engine):
                games_since_return,
                gameweek
         FROM player_features
-        WHERE season = '2025-26'
+        WHERE season = '2026-27'
           AND gameweek = (
-              SELECT MAX(gameweek) FROM player_features WHERE season = '2025-26'
+              SELECT MAX(gameweek) FROM player_features WHERE season = (SELECT MAX(season) FROM player_features)
           )
     """, engine)
     features_map = features_df.set_index("player_id")
@@ -360,7 +360,7 @@ def compute_lineup_probabilities(engine):
         WHERE is_current = TRUE
         LIMIT 1
     """, engine)
-    current_gw = int(gw_result["id"].iloc[0]) if not gw_result.empty else 36
+    current_gw = int(gw_result["id"].iloc[0]) if not gw_result.empty else int(pd.read_sql("SELECT MIN(id) FROM gameweeks WHERE finished = FALSE", engine).iloc[0, 0] or 1)
 
     print(f"\n[2/3] Computing probabilities for GW{current_gw}...")
 
@@ -514,8 +514,8 @@ def verify_lineup_probabilities(engine):
         FROM lineup_probability lp
         LEFT JOIN player_features pf
             ON lp.player_id = pf.player_id
-           AND pf.season = '2025-26'
-           AND pf.gameweek = (SELECT MAX(gameweek) FROM player_features WHERE season = '2025-26')
+           AND pf.season = (SELECT MAX(season) FROM player_features)
+           AND pf.gameweek = (SELECT MAX(gameweek) FROM player_features WHERE season = (SELECT MAX(season) FROM player_features))
         WHERE lp.lineup_probability BETWEEN 0.20 AND 0.75
           AND pf.avg_points_5gw > 4
         ORDER BY pf.avg_points_5gw DESC
@@ -542,8 +542,8 @@ def verify_lineup_probabilities(engine):
         FROM lineup_probability lp
         LEFT JOIN player_features pf
             ON lp.player_id = pf.player_id
-           AND pf.season = '2025-26'
-           AND pf.gameweek = (SELECT MAX(gameweek) FROM player_features WHERE season = '2025-26')
+           AND pf.season = (SELECT MAX(season) FROM player_features)
+           AND pf.gameweek = (SELECT MAX(gameweek) FROM player_features WHERE season = (SELECT MAX(season) FROM player_features))
         WHERE lp.lineup_probability >= 0.85
           AND pf.avg_points_5gw > 5
         ORDER BY pf.avg_points_5gw DESC

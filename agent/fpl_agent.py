@@ -126,8 +126,8 @@ def build_agent_context(engine):
                lp.lineup_probability
         FROM players p
         JOIN player_features pf ON p.id = pf.player_id
-          AND pf.season = '2025-26'
-          AND pf.gameweek = (SELECT MAX(gameweek) FROM player_features WHERE season = '2025-26')
+          AND pf.season = '2026-27'
+          AND pf.gameweek = (SELECT MAX(gameweek) FROM player_features WHERE season = '2026-27')
         JOIN lineup_probability lp ON p.id = lp.player_id
         WHERE lp.lineup_probability < 0.75
           AND pf.avg_points_5gw > 3.5
@@ -154,7 +154,7 @@ def build_agent_context(engine):
                ROUND(xga_rolling_5::numeric, 3) AS xga_5gw,
                ROUND(defence_strength::numeric, 3) AS strength
         FROM team_defence_ratings
-        WHERE season = '2025-26'
+        WHERE season = '2026-27'
           AND xga_rolling_5 IS NOT NULL
         ORDER BY team_name, gameweek DESC
     """), engine)

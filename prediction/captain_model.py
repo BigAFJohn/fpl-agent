@@ -80,7 +80,7 @@ except ImportError:
 
 DB_PATH            = "db/fpl.db"
 CAPTAIN_MODEL_PATH = Path("models/xgb_captain_classifier.pkl")
-TRAIN_SEASONS      = ["2022-23", "2023-24", "2024-25"]
+TRAIN_SEASONS      = ["2022-23", "2023-24", "2024-25", "2025-26"]
 
 CAPTAIN_FEATURES = [
     # === CEILING FEATURES — actual max scores from history ===
@@ -172,10 +172,25 @@ def compute_ceiling_features(engine):
              AND ph.round     = mf.gameweek
         ORDER BY ph.player_id, mf.season, ph.round
     """, engine)
-
     if ph.empty:
-        print("  ⚠ No player_history data found")
-        return pd.DataFrame()
+        print("  ⚠ No player_history data — using archive instead")
+        ph = pd.read_sql("""
+            SELECT pha.element  AS player_id,
+                   pha.round    AS gameweek,
+                   pha.total_points,
+                   pha.season
+            FROM player_history_archive pha
+            JOIN (
+                SELECT DISTINCT player_id, gameweek, season
+                FROM model_features
+            ) mf ON pha.element   = mf.player_id
+                 AND pha.round     = mf.gameweek
+                 AND pha.season    = mf.season
+            ORDER BY pha.element, pha.season, pha.round
+        """, engine)
+        if ph.empty:
+            print("  ⚠ No ceiling data available")
+            return pd.DataFrame()
 
     print(f"  ✓ {len(ph):,} player-gameweek rows loaded")
 
@@ -376,11 +391,27 @@ def train_captain_classifier(df):
         early_stopping_rounds = 40,
     )
 
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_val, y_val)],
-        verbose=False,
-    )
+    if len(X_val) > 0:
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False,
+        )
+    else:
+        print("  ⚠ No validation data — training without early stopping")
+        model_no_es = xgb.XGBClassifier(
+            n_estimators       = 200,
+            max_depth          = 4,
+            learning_rate      = 0.03,
+            subsample          = 0.8,
+            colsample_bytree   = 0.7,
+            min_child_weight   = 10,
+            scale_pos_weight   = spw,
+            random_state       = 42,
+            n_jobs             = -1,
+        )
+        model_no_es.fit(X_train, y_train, verbose=False)
+        return model_no_es, val_df, X_val, y_val
 
     print(f"  ✓ Training complete — best round: {model.best_iteration}")
     return model, val_df, X_val, y_val
@@ -470,11 +501,24 @@ def score_predictions(model, engine):
                p.adjusted_points
         FROM model_features mf
         JOIN predictions p ON mf.player_id = p.player_id
-        WHERE mf.season = '2025-26'
+        WHERE mf.season = (
+              SELECT season FROM model_features
+              ORDER BY CASE season
+                WHEN '2026-27' THEN 1
+                WHEN '2025-26' THEN 2
+                ELSE 3 END, gameweek DESC
+              LIMIT 1
+          )
           AND mf.gameweek = (
-              SELECT MAX(gameweek)
-              FROM model_features
-              WHERE season = '2025-26'
+              SELECT MAX(gameweek) FROM model_features
+              WHERE season = (
+                SELECT season FROM model_features
+                ORDER BY CASE season
+                  WHEN '2026-27' THEN 1
+                  WHEN '2025-26' THEN 2
+                  ELSE 3 END, gameweek DESC
+                LIMIT 1
+              )
           )
     """, engine)
 

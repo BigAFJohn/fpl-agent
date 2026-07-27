@@ -16,8 +16,8 @@ CONCEPTS TO UNDERSTAND BEFORE READING THIS SCRIPT
 2. The training/validation/prediction split
    We use time-based splits — never random — because FPL is sequential:
    - Training:   2022-23, 2023-24, 2024-25 (historical seasons)
-   - Validation: 2025-26 GW1-30 (current season, held out)
-   - Prediction: 2025-26 most recent GW (upcoming fixtures)
+   - Validation: 2026-27 GW1-30 (current season, held out)
+   - Prediction: 2026-27 most recent GW (upcoming fixtures)
    Using random splits would leak future data into training — the model
    would "know" things it couldn't know at prediction time.
 
@@ -77,8 +77,8 @@ MODEL_PATH = "models/xgb_points_predictor.pkl"
 PREDS_PATH = "models/latest_predictions.json"
 
 # Seasons for training vs validation
-TRAIN_SEASONS = ["2022-23", "2023-24", "2024-25"]
-VAL_SEASONS   = ["2025-26"]
+TRAIN_SEASONS = ["2022-23", "2023-24", "2024-25", "2025-26"]
+VAL_SEASONS   = ["2026-27"]
 VAL_GW_MAX    = 30   # Use GW1-30 for validation, rest for prediction
 
 # XGBoost hyperparameters — tuned for FPL point prediction
@@ -185,8 +185,8 @@ def load_model_features(engine):
     df = pd.read_sql("""
         SELECT * FROM model_features
         WHERE actual_points IS NOT NULL
-           OR (season = '2025-26' AND gameweek = (
-               SELECT MAX(gameweek) FROM model_features WHERE season = '2025-26'
+           OR (season = '2026-27' AND gameweek = (
+               SELECT MAX(gameweek) FROM model_features WHERE season = '2026-27'
            ))
         ORDER BY season, gameweek, player_id
     """, engine)
@@ -237,22 +237,99 @@ def split_data(df):
 
     # Validation: current season GW1-30
     val_mask = (
-        (df["season"] == "2025-26") &
+        (df["season"] == "2026-27") &
         (df["gameweek"] <= VAL_GW_MAX) &
         df["actual_points"].notna()
     )
 
-    # Prediction: most recent gameweek (actual_points may or may not be known)
-    max_gw = df[df["season"] == "2025-26"]["gameweek"].max()
-    pred_mask = (df["season"] == "2025-26") & (df["gameweek"] == max_gw)
+    if df[df["season"] == "2026-27"].empty:
+        print("  ⚠ No 2026-27 data yet — building predictions from current players")
+        # Get current players with their most recent form from model_features
+        # Match by web_name across seasons to get correct form for each player
+        from sqlalchemy import create_engine as _ce
+        import os as _os
+        _engine = _ce(_os.environ.get("FPL_DB_URL", "sqlite:///db/fpl.db"))
+        current_players = pd.read_sql("""
+            SELECT pl.id AS player_id,
+                   pl.web_name,
+                   t.name AS team_name,
+                   CASE pl.element_type
+                     WHEN 1 THEN 'GK' WHEN 2 THEN 'DEF'
+                     WHEN 3 THEN 'MID' WHEN 4 THEN 'FWD'
+                     ELSE 'UNK' END AS position,
+                   pl.now_cost / 10.0 AS price
+            FROM players pl
+            JOIN teams t ON pl.team::integer = t.id
+        """, _engine)
+        # Use player_features (short web_names match players table)
+        # rather than model_features (full names)
+        best_form_pf = pd.read_sql("""
+            SELECT pf.*
+            FROM player_features pf
+            WHERE pf.season = (SELECT MAX(season) FROM player_features)
+              AND pf.gameweek = (
+                  SELECT MAX(gameweek) FROM player_features
+                  WHERE season = (SELECT MAX(season) FROM player_features)
+              )
+        """, _engine)
+        # Merge current players with their form from player_features
+        pred_df_base = current_players.merge(
+            best_form_pf.drop(columns=[
+                "player_id", "team_name", "position", "price",
+                "season", "gameweek", "actual_points",
+                "was_home", "fpl_status", "fpl_chance", "confidence_level",
+                "transfers_in_event", "transfers_out_event", "computed_at"
+            ], errors="ignore"),
+            on="web_name",
+            how="left"
+        )
+        # For each current player find their best matching form row
+        # Use most recent season's last GW form data, matched by web_name
+        best_form = df.sort_values(
+            ["season", "gameweek"], ascending=[False, False]
+        ).drop_duplicates(subset="web_name", keep="first")
+        # Merge current players with their historical form
+        pred_df_base = current_players.merge(
+            best_form.drop(columns=[
+                "player_id", "team_name", "position",
+                "price", "team_id", "season", "gameweek", "actual_points",
+                "was_home", "fpl_status", "fpl_chance", "confidence_level",
+                "selected_by_percent", "transfers_in_event", "transfers_out_event",
+                "computed_at"
+            ], errors="ignore"),
+            left_on="web_name",
+            right_on="web_name",
+            how="left"
+        )
+        # Fill missing form with zeros (new players, promoted team players)
+        for col in FEATURE_COLS:
+            if col not in pred_df_base.columns:
+                pred_df_base[col] = 0
+            pred_df_base[col] = pd.to_numeric(
+                pred_df_base[col], errors="coerce"
+            ).fillna(0)
+        pred_df_base["season"]  = "2026-27"
+        pred_df_base["gameweek"] = 1
+        max_gw   = 1
+        pred_mask = pd.Series([True] * len(pred_df_base), index=pred_df_base.index)
+        train_df = df[train_mask].copy()
+        val_df   = df[val_mask].copy()
+        pred_df  = pred_df_base.copy()
+        print(f"  Train : {len(train_df):,} rows ({TRAIN_SEASONS})")
+        print(f"  Val   : 0 rows (2026-27 GW1-{VAL_GW_MAX})")
+        print(f"  Pred  : {len(pred_df):,} rows (GW1 pre-season)")
+        return train_df, val_df, pred_df
+    else:
+        max_gw    = df[df["season"] == "2026-27"]["gameweek"].max()
+        pred_mask = (df["season"] == "2026-27") & (df["gameweek"] == max_gw)
 
     train_df = df[train_mask].copy()
     val_df   = df[val_mask].copy()
     pred_df  = df[pred_mask].copy()
 
     print(f"  Train : {len(train_df):,} rows ({TRAIN_SEASONS})")
-    print(f"  Val   : {len(val_df):,} rows (2025-26 GW1-{VAL_GW_MAX})")
-    print(f"  Pred  : {len(pred_df):,} rows (2025-26 GW{int(max_gw)})")
+    print(f"  Val   : {len(val_df):,} rows (2026-27 GW1-{VAL_GW_MAX})")
+    print(f"  Pred  : {len(pred_df):,} rows (GW{int(max_gw)})")
 
     return train_df, val_df, pred_df
 
@@ -274,18 +351,20 @@ def train_model(train_df, val_df):
     X_train = train_df[FEATURE_COLS].values
     y_train = train_df[TARGET_COL].values
 
-    X_val = val_df[FEATURE_COLS].values
-    y_val = val_df[TARGET_COL].values
-
-    model = xgb.XGBRegressor(**XGB_PARAMS, early_stopping_rounds=50)
-
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_val, y_val)],
-        verbose=False,
-    )
-
-    best_round = model.best_iteration
+    model = xgb.XGBRegressor(**XGB_PARAMS)
+    if len(val_df) > 0:
+        X_val = val_df[FEATURE_COLS].values
+        y_val = val_df[TARGET_COL].values
+        model.early_stopping_rounds = 50
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False,
+        )
+    else:
+        print("  ⚠ No validation data — training without early stopping")
+        model.fit(X_train, y_train, verbose=False)
+    best_round = getattr(model, 'best_iteration', XGB_PARAMS.get('n_estimators', 500))
     print(f"  ✓ Training complete — best round: {best_round}")
     return model
 
@@ -298,6 +377,9 @@ def evaluate_model(model, val_df, pred_df):
     - Top-20 accuracy: do our top-20 predictions include actual top-20 scorers?
     - Position-wise MAE: which positions are hardest to predict?
     """
+    if len(val_df) == 0:
+        print("  ⚠ No validation data — skipping evaluation metrics")
+        return None, None
     print("\n  Evaluating on validation set...")
 
     X_val = val_df[FEATURE_COLS].values
@@ -309,8 +391,8 @@ def evaluate_model(model, val_df, pred_df):
     mae  = mean_absolute_error(y_val, preds)
     rmse = np.sqrt(mean_squared_error(y_val, preds))
 
-    print(f"  MAE  : {mae:.3f} points")
-    print(f"  RMSE : {rmse:.3f} points")
+    print(f"  MAE  : {mae:.3f} points" if mae is not None else "  MAE  : N/A")
+    print(f"  RMSE : {rmse:.3f} points" if rmse is not None else "  RMSE : N/A")
 
     # Top-K accuracy — aggregate to player level first to avoid duplicate names
     val_df = val_df.copy()
@@ -381,12 +463,11 @@ def generate_predictions(model, pred_df, engine):
         "lineup_probability", "adjusted_points",
         "avg_points_5gw", "fixture_fdr", "opponent_name", "fpl_status",
     ]
-    # Keep only columns that exist
     out_cols = [c for c in out_cols if c in result_df.columns]
     out_df = result_df[out_cols].copy()
+
     out_df["model_version"] = f"xgb_v1_{datetime.now().strftime('%Y%m%d')}"
     out_df["predicted_at"]  = datetime.now().isoformat()
-
     out_df.to_sql("predictions", engine, if_exists="replace", index=False)
     print(f"  ✓ {len(out_df):,} predictions written")
     return result_df
@@ -508,7 +589,8 @@ def run_predict_points():
     model = train_model(train_df, val_df)
 
     print("\n[4/5] Evaluating...")
-    mae, rmse = evaluate_model(model, val_df, pred_df)
+    result = evaluate_model(model, val_df, pred_df)
+    mae, rmse = result if result != (None, None) else (None, None)
 
     print("\n[5/5] Generating predictions...")
     generate_predictions(model, pred_df, engine)
@@ -536,8 +618,8 @@ def run_predict_points():
 
     duration = (datetime.now() - start).total_seconds()
     print(f"\n{'='*60}")
-    print(f"  MAE      : {mae:.3f} pts")
-    print(f"  RMSE     : {rmse:.3f} pts")
+    print(f"  MAE      : {mae:.3f} pts" if mae is not None else "  MAE      : N/A (no validation data)")
+    print(f"  RMSE     : {rmse:.3f} pts" if rmse is not None else "  RMSE     : N/A (no validation data)")
     print(f"  Duration : {duration:.0f}s")
     print(f"{'='*60}")
 
