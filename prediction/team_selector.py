@@ -152,7 +152,7 @@ def load_predictions(engine):
                p.price, p.predicted_points, p.adjusted_points,
                p.adjusted_points / 10.0 AS captain_score,
                p.lineup_probability, p.gameweek,
-               p.opponent_name, p.fixture_fdr, p.fpl_status
+               p.opponent_name, p.fixture_fdr, NULL::text AS fpl_status
         FROM predictions p
         ORDER BY p.adjusted_points DESC
     """, engine)

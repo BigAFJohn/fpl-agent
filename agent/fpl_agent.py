@@ -95,14 +95,14 @@ def build_agent_context(engine):
         text("SELECT id FROM gameweeks WHERE is_current = TRUE LIMIT 1"),
         engine
     )
-    current_gw = int(gw_df["id"].iloc[0]) if not gw_df.empty else 36
+    current_gw = int(gw_df["id"].iloc[0]) if not gw_df.empty else int(pd.read_sql(text("SELECT MIN(id) FROM gameweeks WHERE finished = FALSE"), engine).iloc[0, 0] or 1)
 
     # Top 25 predictions
     top_preds = pd.read_sql(text("""
         SELECT web_name, position, team_name, price,
                predicted_points, adjusted_points,
                lineup_probability, fixture_fdr, opponent_name,
-               fpl_status
+               NULL::text AS fpl_status
         FROM predictions
         ORDER BY adjusted_points DESC
         LIMIT 25

@@ -346,7 +346,7 @@ def compute_lineup_probabilities(engine):
                games_since_return,
                gameweek
         FROM player_features
-        WHERE season = '2026-27'
+        WHERE season = (SELECT MAX(season) FROM player_features)
           AND gameweek = (
               SELECT MAX(gameweek) FROM player_features WHERE season = (SELECT MAX(season) FROM player_features)
           )

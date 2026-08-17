@@ -252,6 +252,7 @@ def split_data(df):
         current_players = pd.read_sql("""
             SELECT pl.id AS player_id,
                    pl.web_name,
+                   pl.first_name || ' ' || pl.second_name AS full_name,
                    t.name AS team_name,
                    CASE pl.element_type
                      WHEN 1 THEN 'GK' WHEN 2 THEN 'DEF'
@@ -277,30 +278,12 @@ def split_data(df):
             best_form_pf.drop(columns=[
                 "player_id", "team_name", "position", "price",
                 "season", "gameweek", "actual_points",
-                "was_home", "fpl_status", "fpl_chance", "confidence_level",
                 "transfers_in_event", "transfers_out_event", "computed_at"
             ], errors="ignore"),
-            on="web_name",
-            how="left"
-        )
-        # For each current player find their best matching form row
-        # Use most recent season's last GW form data, matched by web_name
-        best_form = df.sort_values(
-            ["season", "gameweek"], ascending=[False, False]
-        ).drop_duplicates(subset="web_name", keep="first")
-        # Merge current players with their historical form
-        pred_df_base = current_players.merge(
-            best_form.drop(columns=[
-                "player_id", "team_name", "position",
-                "price", "team_id", "season", "gameweek", "actual_points",
-                "was_home", "fpl_status", "fpl_chance", "confidence_level",
-                "selected_by_percent", "transfers_in_event", "transfers_out_event",
-                "computed_at"
-            ], errors="ignore"),
-            left_on="web_name",
+            left_on="full_name",
             right_on="web_name",
             how="left"
-        )
+        ).drop(columns=["web_name_y", "full_name"], errors="ignore")
         # Fill missing form with zeros (new players, promoted team players)
         for col in FEATURE_COLS:
             if col not in pred_df_base.columns:
@@ -463,8 +446,51 @@ def generate_predictions(model, pred_df, engine):
         "lineup_probability", "adjusted_points",
         "avg_points_5gw", "fixture_fdr", "opponent_name", "fpl_status",
     ]
+    # Add web_name from players table if missing (pre-season merge may drop it)
+    if "web_name" not in result_df.columns:
+        names_map = pd.read_sql("""
+            SELECT id AS player_id, web_name
+            FROM players
+        """, engine)
+        result_df = result_df.merge(names_map, on="player_id", how="left")
+
     out_cols = [c for c in out_cols if c in result_df.columns]
     out_df = result_df[out_cols].copy()
+    if "opponent_name" not in out_df.columns:
+        out_df["opponent_name"] = None
+    if "fixture_fdr" not in out_df.columns:
+        out_df["fixture_fdr"] = None
+
+    # Join lineup_probability and fixture data from DB
+    lp_map = pd.read_sql("""
+        SELECT player_id, lineup_probability
+        FROM lineup_probability
+        WHERE gameweek = (SELECT MAX(gameweek) FROM lineup_probability)
+    """, engine)
+    out_df = out_df.drop(columns=["lineup_probability"], errors="ignore")
+    out_df = out_df.merge(lp_map, on="player_id", how="left")
+    out_df["lineup_probability"] = out_df["lineup_probability"].fillna(0.5)
+    out_df["fixture_fdr"]        = out_df["fixture_fdr"].fillna(0)
+    out_df["opponent_name"]      = out_df["opponent_name"].fillna("")
+
+    # Recalculate adjusted_points with real lineup_probability
+    out_df["adjusted_points"] = (
+        pd.to_numeric(out_df["predicted_points"], errors="coerce").fillna(0) *
+        pd.to_numeric(out_df["lineup_probability"], errors="coerce").fillna(0.5)
+    ).round(3)
+
+    # Add fpl_status from players table for filtering
+    status_map = pd.read_sql("""
+        SELECT id AS player_id, status, news
+        FROM players
+    """, engine)
+    out_df = out_df.merge(status_map, on="player_id", how="left")
+    # Remove unavailable/suspended/not-in-squad players
+    before = len(out_df)
+    out_df = out_df[~out_df["status"].isin(["u", "s", "n"])]
+    removed = before - len(out_df)
+    if removed > 0:
+        print(f"  Removed {removed} unavailable/suspended players")
 
     out_df["model_version"] = f"xgb_v1_{datetime.now().strftime('%Y%m%d')}"
     out_df["predicted_at"]  = datetime.now().isoformat()
@@ -508,7 +534,8 @@ def show_predictions(engine):
         SELECT web_name, position, team_name, price,
                predicted_points, prediction_std,
                lineup_probability, adjusted_points,
-               fixture_fdr, opponent_name, fpl_status
+               fixture_fdr, opponent_name,
+               NULL::text AS fpl_status
         FROM predictions
         ORDER BY adjusted_points DESC
         LIMIT 20
