@@ -232,6 +232,10 @@ def split_data(df):
     Time-based train/validation/prediction split.
     Never random — FPL is sequential and future data must not leak into training.
     """
+    from sqlalchemy import create_engine as _ce
+    import os as _os
+    _engine = _ce(_os.environ.get("FPL_DB_URL", "sqlite:///db/fpl.db"))
+
     # Training: historical seasons
     train_mask = df["season"].isin(TRAIN_SEASONS) & df["actual_points"].notna()
 
@@ -242,81 +246,83 @@ def split_data(df):
         df["actual_points"].notna()
     )
 
-    if df[df["season"] == "2026-27"].empty:
-        print("  ⚠ No 2026-27 data yet — building predictions from current players")
-        # Get current players with their most recent form from model_features
-        # Match by web_name across seasons to get correct form for each player
-        from sqlalchemy import create_engine as _ce
-        import os as _os
-        _engine = _ce(_os.environ.get("FPL_DB_URL", "sqlite:///db/fpl.db"))
-        current_players = pd.read_sql("""
-            SELECT pl.id AS player_id,
-                   pl.web_name,
-                   pl.first_name || ' ' || pl.second_name AS full_name,
-                   t.name AS team_name,
-                   CASE pl.element_type
-                     WHEN 1 THEN 'GK' WHEN 2 THEN 'DEF'
-                     WHEN 3 THEN 'MID' WHEN 4 THEN 'FWD'
-                     ELSE 'UNK' END AS position,
-                   pl.now_cost / 10.0 AS price
-            FROM players pl
-            JOIN teams t ON pl.team::integer = t.id
-        """, _engine)
-        # Use player_features (short web_names match players table)
-        # rather than model_features (full names)
-        best_form_pf = pd.read_sql("""
-            SELECT pf.*
-            FROM player_features pf
-            WHERE pf.season = (SELECT MAX(season) FROM player_features)
-              AND pf.gameweek = (
-                  SELECT MAX(gameweek) FROM player_features
-                  WHERE season = (SELECT MAX(season) FROM player_features)
-              )
-        """, _engine)
-        # Merge current players with their form from player_features
-        pred_df_base = current_players.merge(
-            best_form_pf.drop(columns=[
-                "player_id", "team_name", "position", "price",
-                "season", "gameweek", "actual_points",
-                "transfers_in_event", "transfers_out_event", "computed_at"
-            ], errors="ignore"),
-            left_on="full_name",
-            right_on="web_name",
-            how="left"
-        ).drop(columns=["web_name_y", "full_name"], errors="ignore")
-        # Fill missing form with zeros (new players, promoted team players)
-        for col in FEATURE_COLS:
-            if col not in pred_df_base.columns:
-                pred_df_base[col] = 0
-            pred_df_base[col] = pd.to_numeric(
-                pred_df_base[col], errors="coerce"
-            ).fillna(0)
-        pred_df_base["season"]  = "2026-27"
-        pred_df_base["gameweek"] = 1
-        max_gw   = 1
-        pred_mask = pd.Series([True] * len(pred_df_base), index=pred_df_base.index)
-        train_df = df[train_mask].copy()
-        val_df   = df[val_mask].copy()
-        pred_df  = pred_df_base.copy()
-        print(f"  Train : {len(train_df):,} rows ({TRAIN_SEASONS})")
-        print(f"  Val   : 0 rows (2026-27 GW1-{VAL_GW_MAX})")
-        print(f"  Pred  : {len(pred_df):,} rows (GW1 pre-season)")
-        return train_df, val_df, pred_df
-    else:
-        max_gw    = df[df["season"] == "2026-27"]["gameweek"].max()
-        pred_mask = (df["season"] == "2026-27") & (df["gameweek"] == max_gw)
-
     train_df = df[train_mask].copy()
     val_df   = df[val_mask].copy()
-    pred_df  = df[pred_mask].copy()
+
+    # Pre-season: no 2026-27 data yet
+    if df[df["season"] == "2026-27"].empty:
+        next_gw = 1
+        print("  ⚠ No 2026-27 data yet — building predictions from current players")
+    else:
+        max_gw  = df[df["season"] == "2026-27"]["gameweek"].max()
+        next_gw = int(max_gw) + 1
+        print(f"  ✓ 2026-27 data found — predicting GW{next_gw}")
+
+    # Build pred_df from current players + latest player_features form
+    # Works for both pre-season (GW1) and in-season (GW2, GW3, ...)
+    current_players = pd.read_sql("""
+        SELECT pl.id AS player_id,
+               pl.web_name,
+               pl.first_name || ' ' || pl.second_name AS full_name,
+               t.name AS team_name,
+               CASE pl.element_type
+                 WHEN 1 THEN 'GK' WHEN 2 THEN 'DEF'
+                 WHEN 3 THEN 'MID' WHEN 4 THEN 'FWD'
+                 ELSE 'UNK' END AS position,
+               pl.now_cost / 10.0 AS price
+        FROM players pl
+        JOIN teams t ON pl.team::integer = t.id
+    """, _engine)
+
+        # Use most recent GW form — prefer current season, fall back to last season
+    # This handles early-season weeks where rolling averages are NULL
+    best_form_pf = pd.read_sql("""
+        SELECT DISTINCT ON (web_name) pf.*
+        FROM player_features pf
+        WHERE pf.avg_points_5gw IS NOT NULL
+        ORDER BY web_name,
+                 CASE WHEN season = '2026-27' THEN 1 ELSE 2 END,
+                 gameweek DESC
+    """, _engine)
+    # For players with no 2026-27 data yet, also pull last season's final GW
+    fallback_pf = pd.read_sql("""
+        SELECT DISTINCT ON (web_name) pf.*
+        FROM player_features pf
+        WHERE pf.season = '2025-26'
+          AND pf.gameweek = 38
+        ORDER BY web_name
+    """, _engine)
+    # Combine — prefer current season rows
+    current_names = set(best_form_pf["web_name"].tolist())
+    extra = fallback_pf[~fallback_pf["web_name"].isin(current_names)]
+    best_form_pf = pd.concat([best_form_pf, extra], ignore_index=True)
+
+    pred_df_base = current_players.merge(
+        best_form_pf.drop(columns=[
+            "player_id", "team_name", "position", "price",
+            "season", "gameweek", "actual_points",
+            "transfers_in_event", "transfers_out_event", "computed_at"
+        ], errors="ignore"),
+        left_on="full_name",
+        right_on="web_name",
+        how="left"
+    ).drop(columns=["web_name_y", "full_name"], errors="ignore")
+
+    for col in FEATURE_COLS:
+        if col not in pred_df_base.columns:
+            pred_df_base[col] = 0
+        pred_df_base[col] = pd.to_numeric(
+            pred_df_base[col], errors="coerce"
+        ).fillna(0)
+
+    pred_df_base["season"]   = "2026-27"
+    pred_df_base["gameweek"] = next_gw
 
     print(f"  Train : {len(train_df):,} rows ({TRAIN_SEASONS})")
     print(f"  Val   : {len(val_df):,} rows (2026-27 GW1-{VAL_GW_MAX})")
-    print(f"  Pred  : {len(pred_df):,} rows (GW{int(max_gw)})")
+    print(f"  Pred  : {len(pred_df_base):,} rows (GW{next_gw})")
 
-    return train_df, val_df, pred_df
-
-
+    return train_df, val_df, pred_df_base
 # =============================================================================
 # MODEL TRAINING
 # =============================================================================
