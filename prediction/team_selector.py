@@ -280,7 +280,7 @@ def select_optimal_squad(players_df):
     # SOLVE
     # -------------------------------------------------------------------------
 
-    solver = pulp.PULP_CBC_CMD(msg=0)  # Suppress solver output
+    solver = pulp.COIN_CMD(msg=0)  # Suppress solver output
     prob.solve(solver)
 
     status = pulp.LpStatus[prob.status]

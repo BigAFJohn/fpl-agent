@@ -354,6 +354,35 @@ def compute_lineup_probabilities(engine):
     features_map = features_df.set_index("player_id")
     print(f"  ✓ {len(features_df):,} player feature rows loaded")
 
+    # Override started_rate_5gw with current 2026-27 actual data
+    # Players who consistently play 80+ mins in current season are nailed starters
+    current_minutes = pd.read_sql("""
+        SELECT player_id,
+               COUNT(*) as games_played,
+               AVG(minutes) as avg_mins,
+               SUM(CASE WHEN minutes >= 60 THEN 1 ELSE 0 END)::float /
+                   NULLIF(COUNT(*),0) as actual_start_rate
+        FROM player_history
+        WHERE round >= 1
+        GROUP BY player_id
+        HAVING COUNT(*) >= 2
+    """, engine)
+
+    # Merge override into features_df
+    features_df = features_df.merge(current_minutes, on="player_id", how="left")
+
+    # Where current season start rate is higher than historical, use current
+    mask = features_df["actual_start_rate"].notna()
+    features_df.loc[mask, "started_rate_5gw"] = features_df.loc[mask].apply(
+        lambda r: max(float(r["actual_start_rate"]), float(r["started_rate_5gw"] or 0)),
+        axis=1
+    )
+    features_df.loc[mask, "avg_minutes_5gw"] = features_df.loc[mask].apply(
+        lambda r: max(float(r["avg_mins"] or 0), float(r["avg_minutes_5gw"] or 0)),
+        axis=1
+    )
+    features_map = features_df.set_index("player_id")
+    print(f"  ✓ Current season minutes override applied for {mask.sum()} players")
     # Current gameweek
     gw_result = pd.read_sql("""
         SELECT id FROM gameweeks
@@ -410,8 +439,21 @@ def compute_lineup_probabilities(engine):
             0.70      * WEIGHT_INJURY    # Injury contributes via multiplier below
         )
 
-        # Apply injury multiplier
+                # Apply injury multiplier
         combined = combined * injury_mult
+
+        # Current season consistency override
+        # Players who have started regularly this season are nailed — boost their linp
+        if player_id in features_map.index:
+            feat_row = features_map.loc[player_id]
+            gp = feat_row.get("games_played", 0) or 0
+            asr = feat_row.get("actual_start_rate", None)
+            am = feat_row.get("avg_mins", None)
+            if (asr is not None and float(asr) >= 0.8
+                    and am is not None and float(am) >= 70
+                    and int(gp) >= 3
+                    and status == "a"):
+                combined = max(combined, 0.82)
 
         # Hard overrides — FPL official status takes precedence
         if status == "i" or (chance is not None and chance == 0 and status != "a"):

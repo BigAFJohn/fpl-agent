@@ -476,8 +476,27 @@ def generate_predictions(model, pred_df, engine):
     out_df = out_df.drop(columns=["lineup_probability"], errors="ignore")
     out_df = out_df.merge(lp_map, on="player_id", how="left")
     out_df["lineup_probability"] = out_df["lineup_probability"].fillna(0.5)
-    out_df["fixture_fdr"]        = out_df["fixture_fdr"].fillna(0)
-    out_df["opponent_name"]      = out_df["opponent_name"].fillna("")
+
+    # Join fixture difficulty — critical for team selection quality
+    next_gw = out_df["gameweek"].iloc[0] if len(out_df) > 0 else 1
+    fdr_map = pd.read_sql(f"""
+        SELECT pl.id AS player_id,
+               CASE WHEN t.name = fd.home_team
+                    THEN fd.home_attack_fdr
+                    ELSE fd.away_attack_fdr END AS fixture_fdr,
+               CASE WHEN t.name = fd.home_team
+                    THEN fd.away_team
+                    ELSE fd.home_team END AS opponent_name
+        FROM players pl
+        JOIN teams t ON pl.team::integer = t.id
+        JOIN fixture_difficulty fd
+            ON (t.name = fd.home_team OR t.name = fd.away_team)
+            AND fd.gameweek = {int(next_gw)}
+    """, engine)
+    out_df = out_df.drop(columns=["fixture_fdr", "opponent_name"], errors="ignore")
+    out_df = out_df.merge(fdr_map, on="player_id", how="left")
+    out_df["fixture_fdr"]   = out_df["fixture_fdr"].fillna(3.0)
+    out_df["opponent_name"] = out_df["opponent_name"].fillna("")
 
     # Recalculate adjusted_points with real lineup_probability
     out_df["adjusted_points"] = (
